@@ -861,6 +861,7 @@ All settings are overridable via environment variables (`FLOCI_` prefix).
 | `FLOCI_STORAGE_MODE` | `memory` | Controls how data is stored: `memory` · `persistent` · `hybrid` · `wal` |
 | `FLOCI_STORAGE_PERSISTENT_PATH` | `./data` | Directory used for persisted state |
 | `FLOCI_ECR_BASE_URI` | `public.ecr.aws` | AWS ECR base URI used when pulling container images (e.g. Lambda) |
+| `FLOCI_SECURITY_EXTRA_CORS_ALLOWED_ORIGINS` | *(unset)* | Browser origins allowed to call Floci directly. Alias: `EXTRA_CORS_ALLOWED_ORIGINS` |
 
 - Full reference: [configuration docs](https://floci.io/floci/configuration/application-yml/)
 - Per-service storage overrides: [storage docs](https://floci.io/floci/configuration/storage/#per-service-storage-overrides)
