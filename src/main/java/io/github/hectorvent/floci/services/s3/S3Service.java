@@ -949,6 +949,10 @@ public class S3Service {
         Bucket bucket = bucketStore.get(bucketName)
                 .orElseThrow(() -> new AwsException("NoSuchBucket",
                         "The specified bucket does not exist.", 404));
+        if (!bucket.isObjectLockEnabled()) {
+            throw new AwsException("ObjectLockConfigurationNotFoundError",
+                    "Object Lock configuration does not exist for this bucket", 404);
+        }
         return bucket.getDefaultRetention();
     }
 
