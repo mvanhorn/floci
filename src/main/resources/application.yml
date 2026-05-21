@@ -43,6 +43,7 @@ quarkus:
       - --initialize-at-run-time=io.github.hectorvent.floci.services.ses.SesService
       - --initialize-at-run-time=io.github.hectorvent.floci.services.route53.Route53Service
       - --initialize-at-run-time=io.github.hectorvent.floci.services.kms.KmsService
+      - --initialize-at-run-time=io.github.hectorvent.floci.services.cloudfront.CloudFrontService
 
 
 floci:
@@ -83,6 +84,7 @@ floci:
       rds:
         # Override storage mode for RDS (memory = no Docker volumes; hybrid/persistent = named volume per instance)
         # mode: memory
+      cloudfront:
 
   dns:
     # Extra hostname suffixes resolved to Floci's container IP by the embedded DNS server.
@@ -284,3 +286,5 @@ floci:
     bcm-data-exports:
       enabled: true
       emit-mode: synchronous
+    cloudfront:
+      enabled: true

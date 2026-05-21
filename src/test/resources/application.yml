@@ -34,6 +34,7 @@ floci:
         flush-interval-ms: 60000
       opensearch:
         flush-interval-ms: 60000
+      cloudfront:
 
   auth:
     validate-signatures: false
@@ -192,3 +193,5 @@ floci:
     bcm-data-exports:
       enabled: true
       emit-mode: off
+    cloudfront:
+      enabled: true

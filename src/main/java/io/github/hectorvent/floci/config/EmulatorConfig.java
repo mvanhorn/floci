@@ -133,6 +133,7 @@ public interface EmulatorConfig {
         RdsStorageConfig rds();
         NeptuneStorageConfig neptune();
         BackupStorageConfig backup();
+        CloudFrontStorageConfig cloudfront();
     }
 
     interface SsmStorageConfig {
@@ -242,6 +243,10 @@ public interface EmulatorConfig {
         long flushIntervalMs();
     }
 
+    interface CloudFrontStorageConfig {
+        Optional<String> mode();
+    }
+
     interface WalConfig {
         @WithDefault("30000")
         long compactionIntervalMs();
@@ -313,6 +318,7 @@ public interface EmulatorConfig {
         CurServiceConfig cur();
         BcmDataExportsServiceConfig bcmDataExports();
         ConfigServiceConfig configservice();
+        CloudFrontServiceConfig cloudfront();
     }
 
     interface TransferServiceConfig {
@@ -734,6 +740,14 @@ public interface EmulatorConfig {
          */
         @WithDefault("floci-cur-staging")
         String stagingBucket();
+    }
+
+    interface CloudFrontServiceConfig {
+        @WithDefault("true")
+        boolean enabled();
+
+        @WithDefault("cloudfront.net")
+        String domainSuffix();
     }
 
     interface BcmDataExportsServiceConfig {
