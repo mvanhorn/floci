@@ -1,10 +1,12 @@
 <p align="center">
-  <img src="https://github.com/user-attachments/assets/7f95c191-d457-44f9-bb42-17da438c5320" width="400" alt="Floci" />
+<img height="450" alt="FLOCI logo" src="https://github.com/user-attachments/assets/4fbfc9b0-f4c7-4bf0-98c7-bab2ae3f64d5" />
   <p align="center">
     <strong>Light, fluffy, and always free</strong><br />
     No account. No auth token. No feature gates. Just <code>docker compose up</code>.
   </p>
 </p>
+
+
 
 <p align="center">
   <a href="#quick-start">Quick Start</a> ·
