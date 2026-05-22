@@ -9,6 +9,8 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 
 import java.io.IOException;
+import java.net.BindException;
+import java.net.InetSocketAddress;
 import java.net.ServerSocket;
 import java.net.URI;
 import java.net.http.HttpClient;
@@ -19,9 +21,13 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 
+import org.junit.jupiter.api.condition.EnabledOnOs;
+import org.junit.jupiter.api.condition.OS;
+
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class RuntimeApiServerTest {
@@ -223,11 +229,48 @@ class RuntimeApiServerTest {
         assertTrue(new String(result.getPayload()).contains("ContainerStopped"));
     }
 
+    /**
+     * Reproducer for the flaky CI failure reported in RuntimeApiServerTest.
+     *
+     * Root cause: when the server stops with an active HTTP/1.1 (keep-alive) connection,
+     * Vert.x closes that connection from the server side. On Linux this leaves the
+     * connection in TIME_WAIT on the local port. Without SO_REUSEADDR, any subsequent
+     * attempt to bind the same port throws BindException (EADDRINUSE).
+     *
+     * The test is Linux-only because macOS handles TIME_WAIT differently and allows
+     * rebinding without SO_REUSEADDR, which is why the failure only appears in CI.
+     */
+    @Test
+    @Timeout(10)
+    @EnabledOnOs(OS.LINUX)
+    void stopWithActiveConnection_portBlockedByTimeWait_withoutReuseAddr() throws Exception {
+        // Make a request so the HTTP client establishes a keep-alive TCP connection.
+        httpClient.send(
+                HttpRequest.newBuilder(URI.create("http://localhost:" + port + "/ping"))
+                        .GET().build(),
+                HttpResponse.BodyHandlers.ofString());
+
+        // Stop the server — Vert.x sends TCP FIN from the server side, placing the
+        // server end of the connection into TIME_WAIT on Linux.
+        server.stop().get(5, TimeUnit.SECONDS);
+
+        // Without SO_REUSEADDR, binding the same port fails on Linux (EADDRINUSE)
+        // because the TIME_WAIT connection is still associated with this local port.
+        assertThrows(BindException.class, () -> {
+            try (ServerSocket s = new ServerSocket(port)) {
+                // expected to throw before reaching here on Linux
+            }
+        });
+    }
+
     @Test
     @Timeout(10)
     void stopReleasesPortSynchronously() throws Exception {
         server.stop().get(5, TimeUnit.SECONDS);
-        new ServerSocket(port).close();
+        try (ServerSocket s = new ServerSocket()) {
+            s.setReuseAddress(true);
+            s.bind(new InetSocketAddress(port));
+        }
     }
 
     @Test
