@@ -36,7 +36,7 @@ jobs:
           # References:
           #   https://www.conventionalcommits.org/en/v1.0.0/
 
-          PATTERN='^(feat|fix|perf|revert|docs|style|chore|refactor|test|build|ci)(\([a-zA-Z0-9_\-\.,]+\))?!?: .{1,}'
+          PATTERN='^(feat|fix|perf|revert|docs|style|chore|refactor|test|build|ci)(\([-a-zA-Z0-9_.,]+\))?!?: .{1,}'
           FAILED=0
 
           while IFS= read -r msg; do
