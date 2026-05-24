@@ -2275,13 +2275,6 @@ public class S3Controller {
         }
     }
 
-    private boolean hasQueryParam(UriInfo uriInfo, String param) {
-        if (uriInfo.getQueryParameters().containsKey(param)) return true;
-        String query = uriInfo.getRequestUri().getQuery();
-        if (query == null) return false;
-        return query.equals(param) || query.contains(param + "&") || query.contains("&" + param);
-    }
-
     private static final int MAX_INLINE_TAGS = 10;
     private static final int MAX_INLINE_TAGGING_HEADER_BYTES = 8 * 1024;
 
