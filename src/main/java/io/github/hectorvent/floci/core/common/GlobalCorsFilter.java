@@ -1,23 +1,22 @@
 package io.github.hectorvent.floci.core.common;
 
+import io.github.hectorvent.floci.config.EmulatorConfig;
 import jakarta.annotation.Priority;
+import jakarta.inject.Inject;
 import jakarta.ws.rs.Priorities;
 import jakarta.ws.rs.container.ContainerRequestContext;
 import jakarta.ws.rs.container.ContainerRequestFilter;
 import jakarta.ws.rs.container.ContainerResponseContext;
 import jakarta.ws.rs.container.ContainerResponseFilter;
 import jakarta.ws.rs.container.PreMatching;
-import jakarta.ws.rs.core.HttpHeaders;
 import jakarta.ws.rs.core.MediaType;
 import jakarta.ws.rs.core.MultivaluedMap;
 import jakarta.ws.rs.core.Response;
 import jakarta.ws.rs.ext.Provider;
-import org.eclipse.microprofile.config.ConfigProvider;
 
 import java.util.Arrays;
 import java.util.LinkedHashSet;
 import java.util.List;
-import java.util.Locale;
 import java.util.Optional;
 import java.util.Set;
 import java.util.stream.Collectors;
@@ -43,7 +42,7 @@ public class GlobalCorsFilter implements ContainerRequestFilter, ContainerRespon
     private static final String ALLOW_HEADERS = "Access-Control-Allow-Headers";
     private static final String EXPOSE_HEADERS = "Access-Control-Expose-Headers";
     private static final String VARY = "Vary";
-
+    private static final String MAX_AGE = "Access-Control-Max-Age";
     private static final String DEFAULT_ALLOW_METHODS = "GET, HEAD, POST, PUT, PATCH, DELETE, OPTIONS";
     private static final String DEFAULT_ALLOW_HEADERS = String.join(", ",
             "authorization",
@@ -54,15 +53,36 @@ public class GlobalCorsFilter implements ContainerRequestFilter, ContainerRespon
             "x-amz-target",
             "x-amz-user-agent");
 
+    private final jakarta.inject.Provider<EmulatorConfig> configProvider;
+    private volatile CorsSettings settings;
+
+    @Inject
+    public GlobalCorsFilter(jakarta.inject.Provider<EmulatorConfig> configProvider) {
+        this.configProvider = configProvider;
+    }
+
+    private CorsSettings settings() {
+        CorsSettings s = settings;
+        if (s == null) {
+            synchronized (this) {
+                s = settings;
+                if (s == null) {
+                    s = settings = CorsSettings.from(configProvider.get().security());
+                }
+            }
+        }
+        return s;
+    }
+
     @Override
     public void filter(ContainerRequestContext requestContext) {
-        CorsSettings settings = CorsSettings.load();
-        if (!settings.enabled()) {
+        CorsSettings s = settings();
+        if (!s.enabled()) {
             return;
         }
 
         String origin = requestContext.getHeaderString(ORIGIN);
-        if (origin == null || !settings.matchesOrigin(origin)) {
+        if (origin == null || !s.matchesOrigin(origin)) {
             return;
         }
 
@@ -70,31 +90,32 @@ public class GlobalCorsFilter implements ContainerRequestFilter, ContainerRespon
                 && requestContext.getHeaderString(REQUEST_METHOD) != null) {
             Response.ResponseBuilder builder = Response.noContent()
                     .type(MediaType.TEXT_PLAIN_TYPE)
-                    .header(ALLOW_ORIGIN, settings.allowOriginHeader(origin))
+                    .header(ALLOW_ORIGIN, s.allowOriginHeader(origin))
                     .header(ALLOW_METHODS, DEFAULT_ALLOW_METHODS)
-                    .header(ALLOW_HEADERS, settings.allowHeaders(requestContext.getHeaderString(REQUEST_HEADERS)))
+                    .header(ALLOW_HEADERS, s.allowHeaders(requestContext.getHeaderString(REQUEST_HEADERS)))
+                    .header(MAX_AGE, "86400")
                     .header(VARY, ORIGIN);
 
-            settings.exposeHeaders().ifPresent(value -> builder.header(EXPOSE_HEADERS, value));
+            s.exposeHeaders().ifPresent(value -> builder.header(EXPOSE_HEADERS, value));
             requestContext.abortWith(builder.build());
         }
     }
 
     @Override
     public void filter(ContainerRequestContext requestContext, ContainerResponseContext responseContext) {
-        CorsSettings settings = CorsSettings.load();
-        if (!settings.enabled()) {
+        CorsSettings s = settings();
+        if (!s.enabled()) {
             return;
         }
 
         String origin = requestContext.getHeaderString(ORIGIN);
-        if (origin == null || !settings.matchesOrigin(origin)) {
+        if (origin == null || !s.matchesOrigin(origin)) {
             return;
         }
 
         MultivaluedMap<String, Object> headers = responseContext.getHeaders();
-        headers.putIfAbsent(ALLOW_ORIGIN, List.of(settings.allowOriginHeader(origin)));
-        settings.exposeHeaders().ifPresent(value -> headers.putIfAbsent(EXPOSE_HEADERS, List.of(value)));
+        headers.putIfAbsent(ALLOW_ORIGIN, List.of(s.allowOriginHeader(origin)));
+        s.exposeHeaders().ifPresent(value -> headers.putIfAbsent(EXPOSE_HEADERS, List.of(value)));
         addVaryOrigin(headers);
     }
 
@@ -115,16 +136,17 @@ public class GlobalCorsFilter implements ContainerRequestFilter, ContainerRespon
                                 Set<String> extraAllowedHeaders,
                                 Set<String> extraExposeHeaders) {
 
-        static CorsSettings load() {
-            return new CorsSettings(
-                    readBoolean("floci.security.disable-cors-headers",
-                            "disable.cors.headers"),
-                    readCsv("floci.security.extra-cors-allowed-origins",
-                            "extra.cors.allowed.origins"),
-                    readCsv("floci.security.extra-cors-allowed-headers",
-                            "extra.cors.allowed.headers"),
-                    readCsv("floci.security.extra-cors-expose-headers",
-                            "extra.cors.expose.headers"));
+        static CorsSettings from(EmulatorConfig.SecurityConfig security) {
+            Set<String> origins = security.extraCorsAllowedOrigins()
+                    .map(list -> (Set<String>) new LinkedHashSet<>(list))
+                    .orElse(Set.of());
+            Set<String> allowedHeaders = security.extraCorsAllowedHeaders()
+                    .map(list -> (Set<String>) new LinkedHashSet<>(list))
+                    .orElse(Set.of());
+            Set<String> exposeHeaders = security.extraCorsExposeHeaders()
+                    .map(list -> (Set<String>) new LinkedHashSet<>(list))
+                    .orElse(Set.of());
+            return new CorsSettings(security.disableCorsHeaders(), origins, allowedHeaders, exposeHeaders);
         }
 
         boolean enabled() {
@@ -150,27 +172,6 @@ public class GlobalCorsFilter implements ContainerRequestFilter, ContainerRespon
 
         Optional<String> exposeHeaders() {
             return extraExposeHeaders.isEmpty() ? Optional.empty() : Optional.of(String.join(", ", extraExposeHeaders));
-        }
-
-        private static boolean readBoolean(String... names) {
-            for (String name : names) {
-                Optional<String> value = ConfigProvider.getConfig().getOptionalValue(name, String.class);
-                if (value.isPresent()) {
-                    String normalized = value.get().trim().toLowerCase(Locale.ROOT);
-                    return "1".equals(normalized) || "true".equals(normalized) || "yes".equals(normalized);
-                }
-            }
-            return false;
-        }
-
-        private static Set<String> readCsv(String... names) {
-            for (String name : names) {
-                Optional<String> value = ConfigProvider.getConfig().getOptionalValue(name, String.class);
-                if (value.isPresent()) {
-                    return splitCsv(value.get());
-                }
-            }
-            return Set.of();
         }
 
         private static LinkedHashSet<String> splitCsv(String value) {

@@ -75,9 +75,9 @@ class GlobalCorsFilterIntegrationTest {
         @Override
         public Map<String, String> getConfigOverrides() {
             return Map.of(
-                    "extra.cors.allowed.origins", "http://localhost:3000,https://ui.example.test",
-                    "extra.cors.allowed.headers", "x-added-header",
-                    "extra.cors.expose.headers", "x-visible-header");
+                    "floci.security.extra-cors-allowed-origins", "http://localhost:3000,https://ui.example.test",
+                    "floci.security.extra-cors-allowed-headers", "x-added-header",
+                    "floci.security.extra-cors-expose-headers", "x-visible-header");
         }
     }
 }
