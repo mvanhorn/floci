@@ -607,9 +607,17 @@ public class Ec2QueryHandler {
 
     private Response handleModifySubnetAttribute(MultivaluedMap<String, String> p, String region) {
         String subnetId = p.getFirst("SubnetId");
-        String val = p.getFirst("MapPublicIpOnLaunch.Value");
-        if (val != null) {
-            service.modifySubnetAttribute(region, subnetId, "mapPublicIpOnLaunch", val);
+        for (String attr : List.of(
+                "MapPublicIpOnLaunch",
+                "AssignIpv6AddressOnCreation",
+                "EnableDns64",
+                "MapCustomerOwnedIpOnLaunch")) {
+            String val = p.getFirst(attr + ".Value");
+            if (val != null) {
+                String camel = Character.toLowerCase(attr.charAt(0)) + attr.substring(1);
+                service.modifySubnetAttribute(region, subnetId, camel, val);
+                break;
+            }
         }
         return booleanResponse("ModifySubnetAttribute");
     }
@@ -1333,6 +1341,7 @@ public class Ec2QueryHandler {
                 .elem("volumeId", inst.getRootVolumeId())
                 .elem("status", "attached")
                 .elem("deleteOnTermination", "true")
+                .elem("attachTime", inst.getLaunchTime() != null ? ISO_FMT.format(inst.getLaunchTime()) : "")
                 .end("ebs")
                 .end("item")
                 .end("blockDeviceMapping");
@@ -1375,6 +1384,10 @@ public class Ec2QueryHandler {
                 .elem("availabilityZoneId", s.getAvailabilityZoneId())
                 .elem("defaultForAz", String.valueOf(s.isDefaultForAz()))
                 .elem("mapPublicIpOnLaunch", String.valueOf(s.isMapPublicIpOnLaunch()))
+                .elem("assignIpv6AddressOnCreation", String.valueOf(s.isAssignIpv6AddressOnCreation()))
+                .elem("enableDns64", String.valueOf(s.isEnableDns64()))
+                .elem("mapCustomerOwnedIpOnLaunch", String.valueOf(s.isMapCustomerOwnedIpOnLaunch()))
+                .start("ipv6CidrBlockAssociationSet").end("ipv6CidrBlockAssociationSet")
                 .elem("ownerId", s.getOwnerId())
                 .raw(tagSetXml(s.getTags()));
         return xml.build();

@@ -670,8 +670,11 @@ public class Ec2Service {
         if (subnet == null) {
             throw new AwsException("InvalidSubnetID.NotFound", "The subnet ID '" + subnetId + "' does not exist", 400);
         }
-        if ("mapPublicIpOnLaunch".equals(attribute)) {
-            subnet.setMapPublicIpOnLaunch(Boolean.parseBoolean(value));
+        switch (attribute) {
+            case "mapPublicIpOnLaunch"           -> subnet.setMapPublicIpOnLaunch(Boolean.parseBoolean(value));
+            case "assignIpv6AddressOnCreation"   -> subnet.setAssignIpv6AddressOnCreation(Boolean.parseBoolean(value));
+            case "enableDns64"                   -> subnet.setEnableDns64(Boolean.parseBoolean(value));
+            case "mapCustomerOwnedIpOnLaunch"    -> subnet.setMapCustomerOwnedIpOnLaunch(Boolean.parseBoolean(value));
         }
     }
 
