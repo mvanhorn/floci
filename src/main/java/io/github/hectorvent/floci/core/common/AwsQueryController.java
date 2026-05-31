@@ -157,6 +157,8 @@ public class AwsQueryController {
             "CreateRouteTable", "DescribeRouteTables", "DeleteRouteTable",
             "AssociateRouteTable", "DisassociateRouteTable", "CreateRoute", "DeleteRoute",
             "AllocateAddress", "AssociateAddress", "DisassociateAddress", "ReleaseAddress", "DescribeAddresses",
+            "DescribeAddressesAttribute",
+            "DescribeIamInstanceProfileAssociations",
             "DescribeAvailabilityZones", "DescribeRegions", "DescribeAccountAttributes",
             "DescribeInstanceTypes",
             "DescribeNetworkInterfaces"
