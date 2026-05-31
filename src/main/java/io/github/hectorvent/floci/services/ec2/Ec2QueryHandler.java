@@ -15,7 +15,6 @@ import java.nio.charset.StandardCharsets;
 import java.time.ZoneOffset;
 import java.time.format.DateTimeFormatter;
 import java.util.*;
-import java.util.Base64;
 
 @ApplicationScoped
 public class Ec2QueryHandler {
@@ -38,7 +37,8 @@ public class Ec2QueryHandler {
                 // Instances
                 case "RunInstances" -> handleRunInstances(params, region);
                 case "DescribeInstances" -> handleDescribeInstances(params, region);
-                case "DescribeIamInstanceProfileAssociations" -> handleDescribeIamInstanceProfileAssociations(params, region);
+                case "DescribeIamInstanceProfileAssociations" ->
+                        handleDescribeIamInstanceProfileAssociations(params, region);
                 case "TerminateInstances" -> handleTerminateInstances(params, region);
                 case "StartInstances" -> handleStartInstances(params, region);
                 case "StopInstances" -> handleStopInstances(params, region);
@@ -71,8 +71,10 @@ public class Ec2QueryHandler {
                 case "RevokeSecurityGroupEgress" -> handleRevokeSecurityGroupEgress(params, region);
                 case "DescribeSecurityGroupRules" -> handleDescribeSecurityGroupRules(params, region);
                 case "ModifySecurityGroupRules" -> handleModifySecurityGroupRules(params, region);
-                case "UpdateSecurityGroupRuleDescriptionsIngress" -> handleUpdateSgRuleDescriptionsIngress(params, region);
-                case "UpdateSecurityGroupRuleDescriptionsEgress" -> handleUpdateSgRuleDescriptionsEgress(params, region);
+                case "UpdateSecurityGroupRuleDescriptionsIngress" ->
+                        handleUpdateSgRuleDescriptionsIngress(params, region);
+                case "UpdateSecurityGroupRuleDescriptionsEgress" ->
+                        handleUpdateSgRuleDescriptionsEgress(params, region);
                 // Key Pairs
                 case "CreateKeyPair" -> handleCreateKeyPair(params, region);
                 case "DescribeKeyPairs" -> handleDescribeKeyPairs(params, region);
@@ -133,13 +135,13 @@ public class Ec2QueryHandler {
     private Response ec2Error(String code, String message, int status) {
         String xml = new XmlBuilder()
                 .start("Response")
-                  .start("Errors")
-                    .start("Error")
-                      .elem("Code", code)
-                      .elem("Message", message)
-                    .end("Error")
-                  .end("Errors")
-                  .elem("RequestID", UUID.randomUUID().toString())
+                .start("Errors")
+                .start("Error")
+                .elem("Code", code)
+                .elem("Message", message)
+                .end("Error")
+                .end("Errors")
+                .elem("RequestID", UUID.randomUUID().toString())
                 .end("Response")
                 .build();
         return Response.status(status).entity(xml).type(MediaType.APPLICATION_XML).build();
@@ -314,12 +316,16 @@ public class Ec2QueryHandler {
         return xmlResponse(xml.build());
     }
 
-    /** Deterministic instance-profile id derived from the instance id so repeated describes are stable. */
+    /**
+     * Deterministic instance-profile id derived from the instance id so repeated describes are stable.
+     */
     private static String iamInstanceProfileId(String instanceId) {
         return "AIPA" + stableSuffix(instanceId, 17).toUpperCase();
     }
 
-    /** Deterministic association id derived from the instance id so repeated describes are stable. */
+    /**
+     * Deterministic association id derived from the instance id so repeated describes are stable.
+     */
     private static String iamInstanceProfileAssociationId(String instanceId) {
         return "iip-assoc-" + stableSuffix(instanceId, 17);
     }
@@ -1036,7 +1042,7 @@ public class Ec2QueryHandler {
                 .elem("requestId", UUID.randomUUID().toString())
                 .elem("associationId", assoc.getRouteTableAssociationId())
                 .start("associationState")
-                    .elem("state", assoc.getAssociationState())
+                .elem("state", assoc.getAssociationState())
                 .end("associationState")
                 .end("AssociateRouteTableResponse");
         return xmlResponse(xml.build());
@@ -1418,22 +1424,22 @@ public class Ec2QueryHandler {
                 .end("capacityReservationSpecification");
         if (inst.getRootVolumeId() != null) {
             xml.start("blockDeviceMapping")
-                .start("item")
-                .elem("deviceName", inst.getRootDeviceName())
-                .start("ebs")
-                .elem("volumeId", inst.getRootVolumeId())
-                .elem("status", "attached")
-                .elem("deleteOnTermination", "true")
-                .elem("attachTime", inst.getLaunchTime() != null ? ISO_FMT.format(inst.getLaunchTime()) : "")
-                .end("ebs")
-                .end("item")
-                .end("blockDeviceMapping");
+                    .start("item")
+                    .elem("deviceName", inst.getRootDeviceName())
+                    .start("ebs")
+                    .elem("volumeId", inst.getRootVolumeId())
+                    .elem("status", "attached")
+                    .elem("deleteOnTermination", "true")
+                    .elem("attachTime", inst.getLaunchTime() != null ? ISO_FMT.format(inst.getLaunchTime()) : "")
+                    .end("ebs")
+                    .end("item")
+                    .end("blockDeviceMapping");
         }
         if (inst.getIamInstanceProfileArn() != null) {
             xml.start("iamInstanceProfile")
-                .elem("arn", inst.getIamInstanceProfileArn())
-                .elem("id", iamInstanceProfileId(inst.getInstanceId()))
-                .end("iamInstanceProfile");
+                    .elem("arn", inst.getIamInstanceProfileArn())
+                    .elem("id", iamInstanceProfileId(inst.getInstanceId()))
+                    .end("iamInstanceProfile");
         }
         xml.raw(tagSetXml(inst.getTags()));
         return xml.build();
@@ -1595,7 +1601,15 @@ public class Ec2QueryHandler {
         String iopsStr = p.getFirst("Iops");
         int iops = iopsStr != null ? Integer.parseInt(iopsStr) : 0;
         String throughputStr = p.getFirst("Throughput");
-        Integer throughput = throughputStr != null ? Integer.parseInt(throughputStr) : null;
+        Integer throughput = null;
+        if (throughputStr != null) {
+            try {
+                throughput = Integer.parseInt(throughputStr);
+            } catch (NumberFormatException e) {
+                throw new AwsException("ValidationException", "Invalid Throughput value: " + throughputStr, 400);
+            }
+        }
+
         String snapshotId = p.getFirst("SnapshotId");
 
         List<Tag> volumeTags = new ArrayList<>();
