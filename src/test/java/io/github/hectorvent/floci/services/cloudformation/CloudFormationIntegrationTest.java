@@ -5634,4 +5634,151 @@ class CloudFormationIntegrationTest {
             .statusCode(200);
     }
 
+    // ── Issue #924: roll back failed stack creates (criterion #9) ────────────
+
+    @Test
+    void createStack_resourceFailure_rollsBackCreatedResourcesThenRetrySucceeds() {
+        // GoodBucket provisions first (DependsOn forces ordering); BadSecret then fails because
+        // it sets both SecretString and GenerateSecretString. The successful bucket must be rolled
+        // back so a corrected re-deploy starts from a clean slate.
+        String failingTemplate = """
+            {
+              "Resources": {
+                "GoodBucket": {
+                  "Type": "AWS::S3::Bucket",
+                  "Properties": { "BucketName": "cfn-rollback-bucket" }
+                },
+                "BadSecret": {
+                  "Type": "AWS::SecretsManager::Secret",
+                  "DependsOn": "GoodBucket",
+                  "Properties": {
+                    "Name": "cfn-rollback-secret",
+                    "SecretString": "explicit",
+                    "GenerateSecretString": { "PasswordLength": 32 }
+                  }
+                }
+              }
+            }
+            """;
+
+        given()
+            .contentType("application/x-www-form-urlencoded")
+            .formParam("Action", "CreateStack")
+            .formParam("StackName", "cfn-rollback-stack")
+            .formParam("TemplateBody", failingTemplate)
+        .when()
+            .post("/")
+        .then()
+            .statusCode(200);
+
+        // The stack rolled back rather than being left half-built
+        given()
+            .contentType("application/x-www-form-urlencoded")
+            .formParam("Action", "DescribeStacks")
+            .formParam("StackName", "cfn-rollback-stack")
+        .when()
+            .post("/")
+        .then()
+            .statusCode(200)
+            .body(containsString("<StackStatus>ROLLBACK_COMPLETE</StackStatus>"));
+
+        // The bucket that was successfully created is gone again — rollback cleaned it up
+        given()
+            .header("Host", "cfn-rollback-bucket.localhost")
+        .when()
+            .get("/")
+        .then()
+            .statusCode(404);
+
+        // A corrected re-deploy (no failing resource) succeeds on the now-clean slate
+        String goodTemplate = """
+            {
+              "Resources": {
+                "GoodBucket": {
+                  "Type": "AWS::S3::Bucket",
+                  "Properties": { "BucketName": "cfn-rollback-bucket" }
+                }
+              }
+            }
+            """;
+
+        given()
+            .contentType("application/x-www-form-urlencoded")
+            .formParam("Action", "CreateStack")
+            .formParam("StackName", "cfn-rollback-retry-stack")
+            .formParam("TemplateBody", goodTemplate)
+        .when()
+            .post("/")
+        .then()
+            .statusCode(200);
+
+        given()
+            .contentType("application/x-www-form-urlencoded")
+            .formParam("Action", "DescribeStacks")
+            .formParam("StackName", "cfn-rollback-retry-stack")
+        .when()
+            .post("/")
+        .then()
+            .statusCode(200)
+            .body(containsString("<StackStatus>CREATE_COMPLETE</StackStatus>"));
+
+        // The bucket now exists again, provisioned by the successful retry
+        given()
+            .header("Host", "cfn-rollback-bucket.localhost")
+        .when()
+            .get("/")
+        .then()
+            .statusCode(200);
+    }
+
+    @Test
+    void createStack_resourceFailure_setsRollbackComplete_singleResource() {
+        // A lone failing resource still moves the stack to ROLLBACK_COMPLETE (no orphaned state).
+        String template = """
+            {
+              "Resources": {
+                "BadSecret": {
+                  "Type": "AWS::SecretsManager::Secret",
+                  "Properties": {
+                    "Name": "cfn-rollback-lone-secret",
+                    "SecretString": "explicit",
+                    "GenerateSecretString": { "PasswordLength": 32 }
+                  }
+                }
+              }
+            }
+            """;
+
+        given()
+            .contentType("application/x-www-form-urlencoded")
+            .formParam("Action", "CreateStack")
+            .formParam("StackName", "cfn-rollback-lone-stack")
+            .formParam("TemplateBody", template)
+        .when()
+            .post("/")
+        .then()
+            .statusCode(200);
+
+        given()
+            .contentType("application/x-www-form-urlencoded")
+            .formParam("Action", "DescribeStacks")
+            .formParam("StackName", "cfn-rollback-lone-stack")
+        .when()
+            .post("/")
+        .then()
+            .statusCode(200)
+            .body(containsString("<StackStatus>ROLLBACK_COMPLETE</StackStatus>"));
+
+        // The failed resource is still reported as CREATE_FAILED in the resource list
+        given()
+            .contentType("application/x-www-form-urlencoded")
+            .formParam("Action", "DescribeStackResources")
+            .formParam("StackName", "cfn-rollback-lone-stack")
+        .when()
+            .post("/")
+        .then()
+            .statusCode(200)
+            .body(containsString("CREATE_FAILED"));
+    }
+
 }
