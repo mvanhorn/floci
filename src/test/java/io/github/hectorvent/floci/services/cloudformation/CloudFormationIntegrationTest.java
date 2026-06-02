@@ -5094,4 +5094,358 @@ class CloudFormationIntegrationTest {
             .statusCode(200)
             .body("taskDefinition.status", equalTo("INACTIVE"));
     }
+
+    // ── Issue #924: ELBv2 provisioning via CloudFormation ────────────────────
+
+    private static final String ELB_AUTH =
+            "AWS4-HMAC-SHA256 Credential=test/20260601/us-east-1/elasticloadbalancing/aws4_request";
+
+    private static String cfnOutputValue(String describeXml, String key) {
+        return describeXml.split("<OutputKey>" + key + "</OutputKey>")[1]
+                .split("<OutputValue>")[1].split("</OutputValue>")[0];
+    }
+
+    @Test
+    void createStack_withElbV2LoadBalancerTargetGroupListenerRule() {
+        String template = """
+            {
+              "Resources": {
+                "Alb": {
+                  "Type": "AWS::ElasticLoadBalancingV2::LoadBalancer",
+                  "Properties": {
+                    "Name": "cfn-alb",
+                    "Type": "application",
+                    "Scheme": "internet-facing",
+                    "Subnets": ["subnet-aaa", "subnet-bbb"],
+                    "SecurityGroups": ["sg-123"]
+                  }
+                },
+                "Tg": {
+                  "Type": "AWS::ElasticLoadBalancingV2::TargetGroup",
+                  "Properties": {
+                    "Name": "cfn-tg",
+                    "Protocol": "HTTP",
+                    "Port": 80,
+                    "VpcId": "vpc-00000001",
+                    "TargetType": "ip",
+                    "HealthCheckPath": "/health",
+                    "Matcher": { "HttpCode": "200-299" }
+                  }
+                },
+                "Listener": {
+                  "Type": "AWS::ElasticLoadBalancingV2::Listener",
+                  "Properties": {
+                    "LoadBalancerArn": { "Ref": "Alb" },
+                    "Protocol": "HTTP",
+                    "Port": 80,
+                    "DefaultActions": [
+                      { "Type": "forward", "TargetGroupArn": { "Ref": "Tg" } }
+                    ]
+                  }
+                },
+                "Rule": {
+                  "Type": "AWS::ElasticLoadBalancingV2::ListenerRule",
+                  "Properties": {
+                    "ListenerArn": { "Ref": "Listener" },
+                    "Priority": 10,
+                    "Conditions": [
+                      { "Field": "path-pattern", "PathPatternConfig": { "Values": ["/api/*"] } }
+                    ],
+                    "Actions": [
+                      { "Type": "forward", "TargetGroupArn": { "Ref": "Tg" } }
+                    ]
+                  }
+                }
+              },
+              "Outputs": {
+                "AlbRef": { "Value": { "Ref": "Alb" } },
+                "AlbDns": { "Value": { "Fn::GetAtt": ["Alb", "DNSName"] } },
+                "AlbFullName": { "Value": { "Fn::GetAtt": ["Alb", "LoadBalancerFullName"] } },
+                "AlbCanonical": { "Value": { "Fn::GetAtt": ["Alb", "CanonicalHostedZoneID"] } },
+                "TgRef": { "Value": { "Ref": "Tg" } },
+                "TgFullName": { "Value": { "Fn::GetAtt": ["Tg", "TargetGroupFullName"] } },
+                "TgName": { "Value": { "Fn::GetAtt": ["Tg", "TargetGroupName"] } },
+                "ListenerRef": { "Value": { "Ref": "Listener" } },
+                "RuleRef": { "Value": { "Ref": "Rule" } }
+              }
+            }
+            """;
+
+        String stackName = "cfn-elbv2-stack";
+
+        given()
+            .contentType("application/x-www-form-urlencoded")
+            .formParam("Action", "CreateStack")
+            .formParam("StackName", stackName)
+            .formParam("TemplateBody", template)
+        .when()
+            .post("/")
+        .then()
+            .statusCode(200)
+            .body(containsString("<StackId>"));
+
+        String describeXml = given()
+            .contentType("application/x-www-form-urlencoded")
+            .formParam("Action", "DescribeStacks")
+            .formParam("StackName", stackName)
+        .when()
+            .post("/")
+        .then()
+            .statusCode(200)
+            .body(containsString("<StackStatus>CREATE_COMPLETE</StackStatus>"))
+            .extract().asString();
+
+        // Ref/GetAtt parity: every ELBv2 resource's Ref is its ARN.
+        String albArn = cfnOutputValue(describeXml, "AlbRef");
+        assertThat(albArn, startsWith(
+                "arn:aws:elasticloadbalancing:us-east-1:000000000000:loadbalancer/app/cfn-alb/"));
+        assertThat(cfnOutputValue(describeXml, "AlbDns"), containsString(".elb.localhost"));
+        assertThat(cfnOutputValue(describeXml, "AlbFullName"), startsWith("app/cfn-alb/"));
+        assertThat(cfnOutputValue(describeXml, "AlbCanonical"), notNullValue());
+        String tgArn = cfnOutputValue(describeXml, "TgRef");
+        assertThat(tgArn, startsWith(
+                "arn:aws:elasticloadbalancing:us-east-1:000000000000:targetgroup/cfn-tg/"));
+        assertThat(cfnOutputValue(describeXml, "TgFullName"), startsWith("targetgroup/cfn-tg/"));
+        assertThat(cfnOutputValue(describeXml, "TgName"), equalTo("cfn-tg"));
+        assertThat(cfnOutputValue(describeXml, "ListenerRef"), startsWith(
+                "arn:aws:elasticloadbalancing:us-east-1:000000000000:listener/app/cfn-alb/"));
+        assertThat(cfnOutputValue(describeXml, "RuleRef"), startsWith(
+                "arn:aws:elasticloadbalancing:us-east-1:000000000000:listener-rule/app/cfn-alb/"));
+
+        // Load balancer is live in the ELBv2 service
+        given()
+            .formParam("Action", "DescribeLoadBalancers")
+            .formParam("Names.member.1", "cfn-alb")
+            .header("Authorization", ELB_AUTH)
+        .when()
+            .post("/")
+        .then()
+            .statusCode(200)
+            .body("DescribeLoadBalancersResponse.DescribeLoadBalancersResult.LoadBalancers.member.LoadBalancerArn",
+                    equalTo(albArn))
+            .body("DescribeLoadBalancersResponse.DescribeLoadBalancersResult.LoadBalancers.member.Type",
+                    equalTo("application"));
+
+        // Target group carries its health check configuration
+        given()
+            .formParam("Action", "DescribeTargetGroups")
+            .formParam("Names.member.1", "cfn-tg")
+            .header("Authorization", ELB_AUTH)
+        .when()
+            .post("/")
+        .then()
+            .statusCode(200)
+            .body("DescribeTargetGroupsResponse.DescribeTargetGroupsResult.TargetGroups.member.TargetGroupArn",
+                    equalTo(tgArn))
+            .body("DescribeTargetGroupsResponse.DescribeTargetGroupsResult.TargetGroups.member.HealthCheckPath",
+                    equalTo("/health"))
+            .body("DescribeTargetGroupsResponse.DescribeTargetGroupsResult.TargetGroups.member.Port",
+                    equalTo("80"));
+
+        // Listener exists on port 80
+        given()
+            .formParam("Action", "DescribeListeners")
+            .formParam("LoadBalancerArn", albArn)
+            .header("Authorization", ELB_AUTH)
+        .when()
+            .post("/")
+        .then()
+            .statusCode(200)
+            .body("DescribeListenersResponse.DescribeListenersResult.Listeners.member.Port", equalTo("80"))
+            .body("DescribeListenersResponse.DescribeListenersResult.Listeners.member.Protocol", equalTo("HTTP"));
+
+        // The explicit listener rule (priority 10, path-pattern /api/*) was created
+        String rulesXml = given()
+            .formParam("Action", "DescribeRules")
+            .formParam("ListenerArn", cfnOutputValue(describeXml, "ListenerRef"))
+            .header("Authorization", ELB_AUTH)
+        .when()
+            .post("/")
+        .then()
+            .statusCode(200)
+            .extract().asString();
+        assertThat(rulesXml, containsString("<Priority>10</Priority>"));
+        assertThat(rulesXml, containsString("/api/*"));
+    }
+
+    @Test
+    void updateStack_elbV2Listener_modifiesPort() {
+        String stackName = "cfn-elbv2-update-stack";
+        String template = """
+            {
+              "Resources": {
+                "Alb": {
+                  "Type": "AWS::ElasticLoadBalancingV2::LoadBalancer",
+                  "Properties": { "Name": "cfn-upd-alb", "Type": "application" }
+                },
+                "Listener": {
+                  "Type": "AWS::ElasticLoadBalancingV2::Listener",
+                  "Properties": {
+                    "LoadBalancerArn": { "Ref": "Alb" },
+                    "Protocol": "HTTP",
+                    "Port": %d,
+                    "DefaultActions": [
+                      {
+                        "Type": "fixed-response",
+                        "FixedResponseConfig": {
+                          "StatusCode": "200",
+                          "ContentType": "text/plain",
+                          "MessageBody": "ok"
+                        }
+                      }
+                    ]
+                  }
+                }
+              },
+              "Outputs": {
+                "AlbRef": { "Value": { "Ref": "Alb" } }
+              }
+            }
+            """;
+
+        given()
+            .contentType("application/x-www-form-urlencoded")
+            .formParam("Action", "CreateStack")
+            .formParam("StackName", stackName)
+            .formParam("TemplateBody", template.formatted(80))
+        .when()
+            .post("/")
+        .then()
+            .statusCode(200);
+
+        String createXml = given()
+            .contentType("application/x-www-form-urlencoded")
+            .formParam("Action", "DescribeStacks")
+            .formParam("StackName", stackName)
+        .when()
+            .post("/")
+        .then()
+            .statusCode(200)
+            .extract().asString();
+        String albArn = cfnOutputValue(createXml, "AlbRef");
+
+        given()
+            .formParam("Action", "DescribeListeners")
+            .formParam("LoadBalancerArn", albArn)
+            .header("Authorization", ELB_AUTH)
+        .when()
+            .post("/")
+        .then()
+            .statusCode(200)
+            .body("DescribeListenersResponse.DescribeListenersResult.Listeners.member.Port", equalTo("80"));
+
+        // Update: change the listener port 80 -> 8080 (criterion #7, listener modify path)
+        given()
+            .contentType("application/x-www-form-urlencoded")
+            .formParam("Action", "UpdateStack")
+            .formParam("StackName", stackName)
+            .formParam("TemplateBody", template.formatted(8080))
+        .when()
+            .post("/")
+        .then()
+            .statusCode(200);
+
+        given()
+            .formParam("Action", "DescribeListeners")
+            .formParam("LoadBalancerArn", albArn)
+            .header("Authorization", ELB_AUTH)
+        .when()
+            .post("/")
+        .then()
+            .statusCode(200)
+            .body("DescribeListenersResponse.DescribeListenersResult.Listeners.member.Port", equalTo("8080"));
+    }
+
+    @Test
+    void deleteStack_elbV2_leavesNoOrphans() {
+        // Declares the load balancer before the target group so teardown deletes the target
+        // group (reverse order) while the load balancer still exists — exercising the
+        // listener/rule target-group unlink so the target group is not left orphaned.
+        String stackName = "cfn-elbv2-delete-stack";
+        String template = """
+            {
+              "Resources": {
+                "Alb": {
+                  "Type": "AWS::ElasticLoadBalancingV2::LoadBalancer",
+                  "Properties": { "Name": "cfn-del-alb", "Type": "application" }
+                },
+                "Tg": {
+                  "Type": "AWS::ElasticLoadBalancingV2::TargetGroup",
+                  "Properties": {
+                    "Name": "cfn-del-tg",
+                    "Protocol": "HTTP",
+                    "Port": 80,
+                    "VpcId": "vpc-00000001",
+                    "TargetType": "ip"
+                  }
+                },
+                "Listener": {
+                  "Type": "AWS::ElasticLoadBalancingV2::Listener",
+                  "Properties": {
+                    "LoadBalancerArn": { "Ref": "Alb" },
+                    "Protocol": "HTTP",
+                    "Port": 80,
+                    "DefaultActions": [
+                      { "Type": "forward", "TargetGroupArn": { "Ref": "Tg" } }
+                    ]
+                  }
+                }
+              }
+            }
+            """;
+
+        given()
+            .contentType("application/x-www-form-urlencoded")
+            .formParam("Action", "CreateStack")
+            .formParam("StackName", stackName)
+            .formParam("TemplateBody", template)
+        .when()
+            .post("/")
+        .then()
+            .statusCode(200);
+
+        // Sanity: target group exists before delete
+        given()
+            .formParam("Action", "DescribeTargetGroups")
+            .formParam("Names.member.1", "cfn-del-tg")
+            .header("Authorization", ELB_AUTH)
+        .when()
+            .post("/")
+        .then()
+            .statusCode(200)
+            .body("DescribeTargetGroupsResponse.DescribeTargetGroupsResult.TargetGroups.member.TargetGroupName",
+                    equalTo("cfn-del-tg"));
+
+        given()
+            .contentType("application/x-www-form-urlencoded")
+            .formParam("Action", "DeleteStack")
+            .formParam("StackName", stackName)
+        .when()
+            .post("/")
+        .then()
+            .statusCode(200);
+
+        // Load balancer is gone
+        given()
+            .formParam("Action", "DescribeLoadBalancers")
+            .formParam("Names.member.1", "cfn-del-alb")
+            .header("Authorization", ELB_AUTH)
+        .when()
+            .post("/")
+        .then()
+            .statusCode(400)
+            .body("ErrorResponse.Error.Code", equalTo("LoadBalancerNotFound"));
+
+        // Target group is gone too — not left orphaned during teardown
+        String tgXml = given()
+            .formParam("Action", "DescribeTargetGroups")
+            .header("Authorization", ELB_AUTH)
+        .when()
+            .post("/")
+        .then()
+            .statusCode(200)
+            .extract().asString();
+        assertThat(tgXml, not(containsString("cfn-del-tg")));
+    }
+
 }
