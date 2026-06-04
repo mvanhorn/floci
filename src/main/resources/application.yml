@@ -264,6 +264,8 @@ floci:
       api-server-max-port: 6599
       data-path: ./data/eks
       keep-running-on-shutdown: false
+      endpoint-mode: host          # host = https://localhost:<hostPort> (host-reachable); network = container DNS name
+      iam-auth-webhook: true       # wire a token-auth webhook into k3s so `aws eks get-token` works
     elbv2:
       enabled: true
       mock: false
