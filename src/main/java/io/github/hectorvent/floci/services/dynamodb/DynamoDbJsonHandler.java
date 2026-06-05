@@ -680,6 +680,11 @@ public class DynamoDbJsonHandler {
                     "Can not use both expression and non-expression parameters in the same request: "
                     + "Non-expression parameters: {QueryFilter} Expression parameters: {FilterExpression}", 400);
         }
+        if (attributesToGet != null && projectionExpression != null) {
+            throw new AwsException("ValidationException",
+                    "Can not use both expression and non-expression parameters in the same request: "
+                    + "Non-expression parameters: {AttributesToGet} Expression parameters: {ProjectionExpression}", 400);
+        }
 
         if (keyConditionExpr == null && keyConditions == null) {
             throw new AwsException("ValidationException",
@@ -698,7 +703,8 @@ public class DynamoDbJsonHandler {
                     + "Member must satisfy enum value set: [SPECIFIC_ATTRIBUTES, COUNT, ALL_ATTRIBUTES, ALL_PROJECTED_ATTRIBUTES]", 400);
         }
 
-        if ("SPECIFIC_ATTRIBUTES".equals(select) && projectionExpression == null) {
+        boolean hasAttributesToGet = attributesToGet != null && attributesToGet.size() > 0;
+        if ("SPECIFIC_ATTRIBUTES".equals(select) && projectionExpression == null && !hasAttributesToGet) {
             throw new AwsException("ValidationException",
                     "Select type SPECIFIC_ATTRIBUTES requires the ProjectionExpression to be provided.", 400);
         }
