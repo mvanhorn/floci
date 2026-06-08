@@ -449,6 +449,7 @@ public class GlueService {
             columnCopy.setName(column.getName());
             columnCopy.setType(column.getType());
             columnCopy.setComment(column.getComment());
+            columnCopy.setParameters(copyMap(column.getParameters()));
             copy.add(columnCopy);
         }
         return copy;

@@ -126,6 +126,10 @@ class GlueCatalogTest {
         assertThat(createdTable.databaseName()).isEqualTo(DATABASE_NAME);
         assertThat(createdTable.name()).isEqualTo(TABLE_NAME);
         assertThat(createdTable.versionId()).isEqualTo("0");
+        assertThat(createdTable.storageDescriptor().columns())
+                .singleElement()
+                .satisfies(column -> assertThat(column.parameters())
+                        .containsEntry("comment", "identifier"));
         assertThat(glue.getTables(GetTablesRequest.builder()
                 .databaseName(DATABASE_NAME)
                 .build()).tableList())
@@ -284,6 +288,7 @@ class GlueCatalogTest {
                         .columns(Column.builder()
                                 .name("id")
                                 .type("int")
+                                .parameters(Map.of("comment", "identifier"))
                                 .build())
                         .build())
                 .build();
