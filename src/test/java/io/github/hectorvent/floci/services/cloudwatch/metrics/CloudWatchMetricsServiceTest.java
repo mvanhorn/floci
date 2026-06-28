@@ -236,7 +236,7 @@ class CloudWatchMetricsServiceTest {
                 () -> service.setAlarmState("missing-alarm", "ALARM", "reason", null, REGION));
 
         assertEquals(400, ex.getHttpStatus());
-        assertEquals("ResourceNotFoundException", ex.getErrorCode());
+        assertEquals("ResourceNotFound", ex.getErrorCode());
     }
 
     @Test

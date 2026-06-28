@@ -267,7 +267,7 @@ public class CloudWatchMetricsService {
     public void setAlarmState(String alarmName, String stateValue, String stateReason, String stateReasonData, String region) {
         String key = region + "::" + alarmName;
         MetricAlarm alarm = alarmStore.get(key)
-                .orElseThrow(() -> new AwsException("ResourceNotFoundException", "Alarm not found: " + alarmName, 400));
+                .orElseThrow(() -> new AwsException("ResourceNotFound", "Alarm not found: " + alarmName, 400));
 
         alarm.setStateValue(stateValue);
         alarm.setStateReason(stateReason);
