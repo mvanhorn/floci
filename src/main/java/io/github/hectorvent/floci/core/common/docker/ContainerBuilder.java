@@ -108,6 +108,7 @@ public class ContainerBuilder {
         private final EmbeddedDnsServer embeddedDnsServer;
         private final CurrentContainerNetworkResolver currentContainerNetworkResolver;
 
+        private String platform;
         private String name;
         private final List<String> env = new ArrayList<>();
         private List<String> cmd;
@@ -143,6 +144,14 @@ public class ContainerBuilder {
          */
         public Builder withName(String name) {
             this.name = name;
+            return this;
+        }
+
+        /**
+         * Sets the Docker platform in {@code os/architecture} form.
+         */
+        public Builder withPlatform(String platform) {
+            this.platform = platform;
             return this;
         }
 
@@ -434,6 +443,7 @@ public class ContainerBuilder {
         public ContainerSpec build() {
             return new ContainerSpec(
                     image,
+                    platform,
                     name,
                     List.copyOf(env),
                     cmd != null ? List.copyOf(cmd) : null,

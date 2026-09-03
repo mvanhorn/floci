@@ -31,6 +31,7 @@ import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.Mockito.RETURNS_SELF;
 import static org.mockito.Mockito.lenient;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -116,6 +117,27 @@ class ContainerLifecycleManagerLabelsTest {
     }
 
     @Test
+    void createForwardsRequestedPlatform() {
+        CreateContainerCmd createCmd = stubCreateContainer();
+        ContainerSpec spec = specWithPlatform("linux/arm64");
+
+        manager().create(spec);
+
+        verify(imageCacheService).ensureImageExists("busybox:stable", "linux/arm64");
+        verify(createCmd).withPlatform("linux/arm64");
+    }
+
+    @Test
+    void createLeavesPlatformUnsetByDefault() {
+        CreateContainerCmd createCmd = stubCreateContainer();
+
+        manager().create(new ContainerSpec("busybox:stable"));
+
+        verify(imageCacheService).ensureImageExists("busybox:stable", null);
+        verify(createCmd, never()).withPlatform(any(String.class));
+    }
+
+    @Test
     void ensureVolumeAppliesTheSameDefaultLabels() {
         InspectVolumeCmd inspectVolumeCmd = mock(InspectVolumeCmd.class);
         when(dockerClient.inspectVolumeCmd("volume-1")).thenReturn(inspectVolumeCmd);
@@ -163,9 +185,16 @@ class ContainerLifecycleManagerLabelsTest {
 
     private static ContainerSpec specWithLabels(Map<String, String> labels) {
         return new ContainerSpec(
-                "busybox:stable", null, List.of(), null, null, null, Map.of(), List.of(), null,
+                "busybox:stable", null, null, List.of(), null, null, null, Map.of(), List.of(), null,
                 List.of(), List.of(), List.of(), labels, null, false, null, List.of(), null,
                 null, List.of());
+    }
+
+    private static ContainerSpec specWithPlatform(String platform) {
+        return new ContainerSpec(
+                "busybox:stable", platform, null, List.of(), null, null, null, Map.of(), List.of(),
+                null, List.of(), List.of(), List.of(), Map.of(), null, false, null, List.of(),
+                null, null, List.of());
     }
 
     private CreateContainerCmd stubCreateContainer() {

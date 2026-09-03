@@ -12,6 +12,7 @@ import java.util.Map;
  * Use {@link ContainerBuilder} to construct instances of this record.
  *
  * @param image Docker image name (required)
+ * @param platform Docker platform in {@code os/architecture} form (optional)
  * @param name Container name (optional, Docker generates one if null)
  * @param env Environment variables as "KEY=value" strings
  * @param cmd Command to run (overrides image CMD)
@@ -34,6 +35,7 @@ import java.util.Map;
  */
 public record ContainerSpec(
         String image,
+        String platform,
         String name,
         List<String> env,
         List<String> cmd,
@@ -59,7 +61,7 @@ public record ContainerSpec(
      * All other fields will be null or empty lists.
      */
     public ContainerSpec(String image) {
-        this(image, null, List.of(), null, null, null, Map.of(), List.of(), null, List.of(), List.of(), List.of(), Map.of(), null, false, null, List.of(), null, null, List.of());
+        this(image, null, null, List.of(), null, null, null, Map.of(), List.of(), null, List.of(), List.of(), List.of(), Map.of(), null, false, null, List.of(), null, null, List.of());
     }
 
     /**

@@ -49,6 +49,8 @@ public class ContainerLifecycleManager {
     // per uid) this reads as a disk-space problem and sends operators looking in the wrong place.
     private static final Pattern KEYRING_QUOTA_PATTERN =
             Pattern.compile("join keyctl.*disk quota exceeded", Pattern.CASE_INSENSITIVE | Pattern.DOTALL);
+    private static final Pattern EXEC_FORMAT_PATTERN =
+            Pattern.compile("exec format error", Pattern.CASE_INSENSITIVE);
 
     private final DockerClient dockerClient;
     private final ImageCacheService imageCacheService;
@@ -104,13 +106,16 @@ public class ContainerLifecycleManager {
     public String create(ContainerSpec spec) {
         LOG.debugv("Creating container from spec: image={0}, name={1}", spec.image(), spec.name());
 
-        imageCacheService.ensureImageExists(spec.image());
+        imageCacheService.ensureImageExists(spec.image(), spec.platform());
 
         HostConfig hostConfig = buildHostConfig(spec);
 
         CreateContainerCmd createCmd = dockerClient.createContainerCmd(spec.image())
                 .withHostConfig(hostConfig);
 
+        if (spec.platform() != null && !spec.platform().isBlank()) {
+            createCmd.withPlatform(spec.platform());
+        }
         if (spec.name() != null) {
             createCmd.withName(spec.name());
         }
@@ -151,7 +156,7 @@ public class ContainerLifecycleManager {
      * @return information about the running container including resolved endpoints
      */
     public ContainerInfo startCreated(String containerId, ContainerSpec spec) {
-        startContainer(containerId);
+        startContainer(containerId, spec.platform());
         LOG.infov("Started container {0}", containerId);
 
         if (spec.networkMode() != null && !spec.networkMode().isBlank() && spec.hasPortBindings()) {
@@ -178,10 +183,22 @@ public class ContainerLifecycleManager {
      * translation rather than a raw {@code dockerClient.startContainerCmd(...)} call.
      */
     void startContainer(String containerId) {
+        startContainer(containerId, null);
+    }
+
+    private void startContainer(String containerId, String platform) {
         try {
             dockerClient.startContainerCmd(containerId).exec();
         } catch (DockerException e) {
             String message = e.getMessage();
+            if (platform != null && !platform.isBlank()
+                    && message != null && EXEC_FORMAT_PATTERN.matcher(message).find()) {
+                throw new IllegalStateException(
+                        "Container start failed for requested platform " + platform
+                                + ": the Docker host cannot execute this architecture. Configure "
+                                + "host emulation for the requested platform or use a compatible host. "
+                                + "Original error: " + message, e);
+            }
             if (message != null && KEYRING_QUOTA_PATTERN.matcher(message).find()) {
                 throw new IllegalStateException(
                         "Container start failed: the container runtime's kernel session-keyring is "

@@ -1,6 +1,8 @@
 package io.github.hectorvent.floci.services.lambda.launcher;
 
 import com.github.dockerjava.api.DockerClient;
+import com.github.dockerjava.api.command.InspectImageResponse;
+import com.github.dockerjava.api.command.PullImageCmd;
 import com.github.dockerjava.api.command.PullImageResultCallback;
 import com.github.dockerjava.api.exception.DockerClientException;
 import com.github.dockerjava.api.exception.InternalServerErrorException;
@@ -16,8 +18,8 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.TimeUnit;
 
 /**
- * Ensures each Docker image is pulled only once.
- * Thread-safe using ConcurrentHashMap for double-checked locking per image.
+ * Ensures each Docker image and platform combination is pulled only once.
+ * Thread-safe using ConcurrentHashMap for double-checked locking per image and platform.
  */
 @ApplicationScoped
 public class ImageCacheService {
@@ -29,8 +31,8 @@ public class ImageCacheService {
 
     private final DockerClient dockerClient;
     private final List<EmulatorConfig.DockerConfig.RegistryCredential> registryCredentials;
-    private final Set<String> pulledImages = ConcurrentHashMap.newKeySet();
-    private final ConcurrentHashMap<String, Object> locks = new ConcurrentHashMap<>();
+    private final Set<ImageKey> pulledImages = ConcurrentHashMap.newKeySet();
+    private final ConcurrentHashMap<ImageKey, Object> locks = new ConcurrentHashMap<>();
 
     @Inject
     public ImageCacheService(DockerClient dockerClient, EmulatorConfig config) {
@@ -39,33 +41,47 @@ public class ImageCacheService {
     }
 
     public void ensureImageExists(String imageUri) {
-        if (pulledImages.contains(imageUri)) {
+        ensureImageExists(imageUri, null);
+    }
+
+    public void ensureImageExists(String imageUri, String platform) {
+        String requestedPlatform = platform == null || platform.isBlank() ? null : platform;
+        ImageKey imageKey = new ImageKey(imageUri, requestedPlatform);
+        if (pulledImages.contains(imageKey)) {
             return;
         }
-        Object lock = locks.computeIfAbsent(imageUri, k -> new Object());
+        Object lock = locks.computeIfAbsent(imageKey, k -> new Object());
         synchronized (lock) {
-            if (pulledImages.contains(imageUri)) {
+            if (pulledImages.contains(imageKey)) {
                 return;
             }
-            if (isLocalImagePresent(imageUri)) {
-                pulledImages.add(imageUri);
-                LOG.infov("Image already present locally, skipping pull: {0}", imageUri);
+            if (isLocalImagePresent(imageUri, requestedPlatform)) {
+                pulledImages.add(imageKey);
+                LOG.infov("Image already present locally, skipping pull: {0} ({1})",
+                        imageUri, requestedPlatform);
                 return;
             }
-            LOG.infov("Pulling image: {0}", imageUri);
+            LOG.infov("Pulling image: {0} ({1})", imageUri, requestedPlatform);
             try {
                 runWithRetry(imageUri, MAX_PULL_ATTEMPTS, INITIAL_BACKOFF_MS,
-                        () -> dockerClient.pullImageCmd(imageUri)
-                                .withAuthConfig(resolveAuth(imageUri))
+                        () -> pullImageCmd(imageUri, requestedPlatform)
                                 .exec(new PullImageResultCallback())
                                 .awaitCompletion(5, TimeUnit.MINUTES));
-                pulledImages.add(imageUri);
-                LOG.infov("Image pulled successfully: {0}", imageUri);
+                pulledImages.add(imageKey);
+                LOG.infov("Image pulled successfully: {0} ({1})", imageUri, requestedPlatform);
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
                 throw new RuntimeException("Interrupted while pulling image: " + imageUri, e);
             }
         }
+    }
+
+    private PullImageCmd pullImageCmd(String imageUri, String platform) {
+        PullImageCmd pullImageCmd = dockerClient.pullImageCmd(imageUri);
+        if (platform != null) {
+            pullImageCmd.withPlatform(platform);
+        }
+        return pullImageCmd.withAuthConfig(resolveAuth(imageUri));
     }
 
     /**
@@ -118,13 +134,20 @@ public class ImageCacheService {
         void run() throws InterruptedException;
     }
 
-    private boolean isLocalImagePresent(String imageUri) {
+    private boolean isLocalImagePresent(String imageUri, String platform) {
         try {
-            dockerClient.inspectImageCmd(imageUri).exec();
-            return true;
+            InspectImageResponse image = dockerClient.inspectImageCmd(imageUri).exec();
+            return platform == null || matchesPlatform(image, platform);
         } catch (com.github.dockerjava.api.exception.NotFoundException e) {
             return false;
         }
+    }
+
+    private static boolean matchesPlatform(InspectImageResponse image, String platform) {
+        String[] requested = platform.split("/", 3);
+        return requested.length >= 2
+                && requested[0].equalsIgnoreCase(image.getOs())
+                && requested[1].equalsIgnoreCase(image.getArch());
     }
 
     private AuthConfig resolveAuth(String imageUri) {
@@ -144,5 +167,8 @@ public class ImageCacheService {
     static String extractRegistryHost(String imageUri) {
         String firstSegment = imageUri.split("/")[0];
         return (firstSegment.contains(".") || firstSegment.contains(":")) ? firstSegment : "";
+    }
+
+    private record ImageKey(String imageUri, String platform) {
     }
 }

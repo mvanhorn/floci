@@ -121,4 +121,21 @@ class ContainerLifecycleManagerStartFailureTest {
 
         assertSame(portConflict, thrown, "unrelated Docker errors must propagate unchanged");
     }
+
+    @Test
+    void startCreatedTranslatesExecFormatErrorForRequestedPlatform() {
+        ContainerSpec arm64Spec = new ContainerBuilder.Builder(null, null, null, null, null)
+                .withPlatform("linux/arm64")
+                .build();
+        StartContainerCmd startCmd = mock(StartContainerCmd.class);
+        when(dockerClient.startContainerCmd("container-id")).thenReturn(startCmd);
+        when(startCmd.exec()).thenThrow(new DockerException(
+                "failed to create task: exec format error", 500));
+
+        IllegalStateException thrown = assertThrows(IllegalStateException.class,
+                () -> manager.startCreated("container-id", arm64Spec));
+
+        assertTrue(thrown.getMessage().contains("linux/arm64"));
+        assertTrue(thrown.getMessage().contains("emulation"));
+    }
 }

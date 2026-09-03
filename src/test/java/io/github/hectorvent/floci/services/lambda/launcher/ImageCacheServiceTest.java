@@ -2,6 +2,7 @@ package io.github.hectorvent.floci.services.lambda.launcher;
 
 import com.github.dockerjava.api.DockerClient;
 import com.github.dockerjava.api.command.InspectImageCmd;
+import com.github.dockerjava.api.command.InspectImageResponse;
 import com.github.dockerjava.api.command.PullImageCmd;
 import com.github.dockerjava.api.command.PullImageResultCallback;
 import com.github.dockerjava.api.exception.DockerClientException;
@@ -61,6 +62,50 @@ class ImageCacheServiceTest {
 
         assertSame(failure, thrown);
         verify(dockerClient, never()).pullImageCmd(IMAGE);
+    }
+
+    @Test
+    void pullsRequestedPlatformWhenLocalImageArchitectureDoesNotMatch() throws Exception {
+        DockerClient dockerClient = mock(DockerClient.class);
+        InspectImageCmd inspectImage = mock(InspectImageCmd.class);
+        InspectImageResponse localImage = new InspectImageResponse()
+                .withOs("linux")
+                .withArch("amd64");
+        PullImageCmd pullImage = mock(PullImageCmd.class);
+        PullImageResultCallback callback = mock(PullImageResultCallback.class);
+        when(dockerClient.inspectImageCmd(IMAGE)).thenReturn(inspectImage);
+        when(inspectImage.exec()).thenReturn(localImage);
+        when(dockerClient.pullImageCmd(IMAGE)).thenReturn(pullImage);
+        when(pullImage.withPlatform("linux/arm64")).thenReturn(pullImage);
+        when(pullImage.withAuthConfig(any())).thenReturn(pullImage);
+        when(pullImage.exec(any(PullImageResultCallback.class))).thenReturn(callback);
+
+        newService(dockerClient).ensureImageExists(IMAGE, "linux/arm64");
+
+        verify(pullImage).withPlatform("linux/arm64");
+        verify(callback).awaitCompletion(5, TimeUnit.MINUTES);
+    }
+
+    @Test
+    void cachesSameImageSeparatelyForEachPlatform() throws Exception {
+        DockerClient dockerClient = mock(DockerClient.class);
+        InspectImageCmd inspectImage = mock(InspectImageCmd.class);
+        PullImageCmd pullImage = mock(PullImageCmd.class);
+        PullImageResultCallback callback = mock(PullImageResultCallback.class);
+        when(dockerClient.inspectImageCmd(IMAGE)).thenReturn(inspectImage);
+        when(inspectImage.exec()).thenThrow(new NotFoundException("image not found"));
+        when(dockerClient.pullImageCmd(IMAGE)).thenReturn(pullImage);
+        when(pullImage.withPlatform(any())).thenReturn(pullImage);
+        when(pullImage.withAuthConfig(any())).thenReturn(pullImage);
+        when(pullImage.exec(any(PullImageResultCallback.class))).thenReturn(callback);
+
+        ImageCacheService service = newService(dockerClient);
+        service.ensureImageExists(IMAGE, "linux/amd64");
+        service.ensureImageExists(IMAGE, "linux/arm64");
+
+        verify(pullImage).withPlatform("linux/amd64");
+        verify(pullImage).withPlatform("linux/arm64");
+        verify(callback, org.mockito.Mockito.times(2)).awaitCompletion(5, TimeUnit.MINUTES);
     }
 
     @Test

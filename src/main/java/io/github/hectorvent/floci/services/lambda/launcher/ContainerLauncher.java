@@ -212,6 +212,7 @@ public class ContainerLauncher implements LambdaRuntimeLauncher {
 
         // If this is an AWS-shaped ECR URI, rewrite it to Floci's loopback registry
         image = ecrRegistryManager.rewriteImageUri(image);
+        String platform = resolveDockerPlatform(fn);
 
         // Determine host address reachable from container
         String hostAddress = dockerHostResolver.resolve();
@@ -280,6 +281,7 @@ public class ContainerLauncher implements LambdaRuntimeLauncher {
         }
 
         ContainerBuilder.Builder specBuilder = containerBuilder.newContainer(image)
+                .withPlatform(platform)
                 .withName(containerName)
                 .withEnv(env)
                 .withMemoryMb(fn.getMemorySize())
@@ -877,6 +879,7 @@ public class ContainerLauncher implements LambdaRuntimeLauncher {
         // A minimal helper container (sleep) with the volume mounted read-write at /var/task; we
         // tar-copy the code into it, then discard it — the data persists in the volume.
         ContainerSpec helperSpec = containerBuilder.newContainer(image)
+                .withPlatform(resolveDockerPlatform(fn))
                 .withName(resolveContainerNamePrefix(config) + "-codevol-" + fn.getFunctionName() + "-" + shortId)
                 .withEnv(java.util.List.of())
                 .withEntrypoint(java.util.List.of("sleep"))
@@ -902,6 +905,14 @@ public class ContainerLauncher implements LambdaRuntimeLauncher {
             }
             populateSemaphore.release();
         }
+    }
+
+    static String resolveDockerPlatform(LambdaFunction fn) {
+        List<String> architectures = fn.getArchitectures();
+        return architectures != null && !architectures.isEmpty()
+                && "arm64".equals(architectures.getFirst())
+                ? "linux/arm64"
+                : "linux/amd64";
     }
 
     // A code volume survives an emulator restart, but the in-process populatedCodeVolumes set does not.

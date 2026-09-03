@@ -239,6 +239,46 @@ class ContainerLauncherTest {
     }
 
     @Test
+    void launchFunction_usesArm64Platform() throws Exception {
+        Path codePath = Files.createDirectory(tempDir.resolve("arm64-code"));
+        LambdaFunction fn = new LambdaFunction();
+        fn.setFunctionName("arm64-fn");
+        fn.setRuntime("nodejs20.x");
+        fn.setHandler("index.handler");
+        fn.setCodeLocalPath(codePath.toString());
+        fn.setArchitectures(List.of("arm64"));
+
+        launcher.launch(fn);
+
+        assertEquals("linux/arm64", captureRealContainerSpec().platform());
+    }
+
+    @Test
+    void launchFunction_usesAmd64PlatformForX86AndMissingArchitecture() throws Exception {
+        Path x86Code = Files.createDirectory(tempDir.resolve("x86-code"));
+        LambdaFunction x86 = new LambdaFunction();
+        x86.setFunctionName("x86-fn");
+        x86.setRuntime("nodejs20.x");
+        x86.setHandler("index.handler");
+        x86.setCodeLocalPath(x86Code.toString());
+        x86.setArchitectures(List.of("x86_64"));
+
+        launcher.launch(x86);
+        assertEquals("linux/amd64", captureRealContainerSpec().platform());
+
+        org.mockito.Mockito.clearInvocations(lifecycleManager);
+        Path defaultCode = Files.createDirectory(tempDir.resolve("default-code"));
+        LambdaFunction defaultArchitecture = new LambdaFunction();
+        defaultArchitecture.setFunctionName("default-fn");
+        defaultArchitecture.setRuntime("nodejs20.x");
+        defaultArchitecture.setHandler("index.handler");
+        defaultArchitecture.setCodeLocalPath(defaultCode.toString());
+
+        launcher.launch(defaultArchitecture);
+        assertEquals("linux/amd64", captureRealContainerSpec().platform());
+    }
+
+    @Test
     void launchFunction_createsWithoutBindMountsOrVolume_forSmallCode() throws Exception {
         Path codePath = Files.createDirectory(tempDir.resolve("code"));
 
@@ -749,6 +789,7 @@ class ContainerLauncherTest {
         fn.setHandler("index.handler");
         fn.setCodeLocalPath(codePath.toString());
         fn.setCodeSha256("large-fn-sha-v1");
+        fn.setArchitectures(List.of("arm64"));
 
         long original = ContainerLauncher.CODE_VOLUME_MIN_BYTES;
         try {
@@ -760,6 +801,11 @@ class ContainerLauncherTest {
         }
 
         ContainerSpec spec = captureRealContainerSpec();
+        ArgumentCaptor<ContainerSpec> allSpecs = ArgumentCaptor.forClass(ContainerSpec.class);
+        verify(lifecycleManager, times(2)).create(allSpecs.capture());
+        assertTrue(allSpecs.getAllValues().stream()
+                .allMatch(createdSpec -> "linux/arm64".equals(createdSpec.platform())),
+                "the code-volume helper and function container should use the same platform");
         // The real container mounts /var/task read-only from the code volume...
         Mount codeMount = varTaskVolumeMount(spec);
         assertNotNull(codeMount, "large code: /var/task should be a named-volume mount");
@@ -772,7 +818,6 @@ class ContainerLauncherTest {
         assertEquals(1, capturedRemotePaths.stream().filter("/var/task"::equals).count(),
                 "/var/task should be copied exactly once (into the populate helper)");
         // Two creates: the helper + the real container. The helper is discarded.
-        verify(lifecycleManager, times(2)).create(any());
         verify(lifecycleManager, atLeastOnce()).ensureVolume(any());
         verify(lifecycleManager, times(1)).stopAndRemove(any(), any()); // the helper only
         // A superseded code-version volume is never deleted synchronously within a single launch
