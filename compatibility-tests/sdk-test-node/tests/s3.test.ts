@@ -3,6 +3,7 @@
  */
 
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { Readable } from 'node:stream';
 import {
   S3Client,
   CreateBucketCommand,
@@ -25,6 +26,7 @@ import { makeClient, uniqueName, CLIENT_CONFIG } from './setup';
 
 describe('S3', () => {
   let s3: S3Client;
+  let virtualHostedS3: S3Client;
   let euS3: S3Client;
   let bucketName: string;
   let euBucketName: string;
@@ -32,6 +34,7 @@ describe('S3', () => {
 
   beforeAll(() => {
     s3 = makeClient(S3Client, { forcePathStyle: true });
+    virtualHostedS3 = makeClient(S3Client, { forcePathStyle: false });
     euS3 = new S3Client({ ...CLIENT_CONFIG, region: 'eu-central-1', forcePathStyle: true });
     bucketName = `test-bucket-${uniqueName()}`;
     euBucketName = `test-bucket-eu-${uniqueName()}`;
@@ -101,6 +104,32 @@ describe('S3', () => {
     await s3.send(
       new PutObjectCommand({ Bucket: bucketName, Key: 'test.txt', Body: 'hello from test' })
     );
+  });
+
+  it('should preserve virtual-host routing for a streaming upload with a trailing checksum', async () => {
+    const key = '0123456789abcdef0123456789abcdef.json';
+    const content = Buffer.from('sdk v3 streaming content');
+
+    await virtualHostedS3.send(
+      new PutObjectCommand({
+        Bucket: bucketName,
+        Key: key,
+        Body: Readable.from([content]),
+        ContentLength: content.length,
+        ChecksumAlgorithm: 'SHA256',
+      })
+    );
+
+    const head = await virtualHostedS3.send(
+      new HeadObjectCommand({ Bucket: bucketName, Key: key })
+    );
+    expect(head.ContentLength).toBe(content.length);
+
+    const response = await virtualHostedS3.send(
+      new GetObjectCommand({ Bucket: bucketName, Key: key })
+    );
+    const body = await response.Body?.transformToByteArray();
+    expect(body && Buffer.from(body)).toEqual(content);
   });
 
   it('should head object', async () => {

@@ -100,7 +100,6 @@ public class S3VirtualHostFilter implements ContainerRequestFilter {
         // Falling back to it keeps virtual-hosted-style routing working when a
         // browser negotiates HTTP/2 over HTTPS (where the Host header is absent).
         String host = resolveHost(requestContext.getHeaderString("Host"), uri);
-        if (host == null) return;
 
         // Do not hijack requests meant for other AWS services
         String auth = requestContext.getHeaderString("Authorization");
@@ -118,6 +117,10 @@ public class S3VirtualHostFilter implements ContainerRequestFilter {
         }
 
         String bucket = extractBucket(host, baseHostname, serviceHostSuffixes);
+        if (bucket == null) {
+            String forwardedHost = firstForwardedHost(requestContext.getHeaderString("X-Forwarded-Host"));
+            bucket = extractBucket(forwardedHost, baseHostname, serviceHostSuffixes);
+        }
         if (bucket == null) return;
 
         String path = uri.getRawPath();
@@ -162,6 +165,35 @@ public class S3VirtualHostFilter implements ContainerRequestFilter {
             return hostHeader;
         }
         return requestUri != null ? requestUri.getAuthority() : null;
+    }
+
+    /**
+     * Returns the original client-facing authority from an {@code X-Forwarded-Host} proxy chain.
+     * Proxies append authorities from left to right, so only the first entry identifies the
+     * authority selected by the client. Invalid authorities are ignored rather than fed into S3
+     * bucket parsing.
+     */
+    static String firstForwardedHost(String forwardedHost) {
+        if (forwardedHost == null) {
+            return null;
+        }
+
+        String authority = forwardedHost.split(",", 2)[0].trim();
+        if (authority.isEmpty()) {
+            return null;
+        }
+
+        try {
+            URI parsed = URI.create("http://" + authority);
+            if (!authority.equals(parsed.getRawAuthority())
+                    || parsed.getHost() == null
+                    || parsed.getRawUserInfo() != null) {
+                return null;
+            }
+            return authority;
+        } catch (IllegalArgumentException e) {
+            return null;
+        }
     }
 
     /**

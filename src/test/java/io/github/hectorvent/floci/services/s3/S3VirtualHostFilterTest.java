@@ -5,7 +5,9 @@ import jakarta.ws.rs.core.UriInfo;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.CsvSource;
+import org.junit.jupiter.params.provider.NullAndEmptySource;
 import org.junit.jupiter.params.provider.NullSource;
+import org.junit.jupiter.params.provider.ValueSource;
 import org.mockito.ArgumentCaptor;
 
 import java.net.URI;
@@ -19,6 +21,7 @@ import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -278,6 +281,83 @@ class S3VirtualHostFilterTest {
         URI uri = URI.create("https://my-bucket.s3.us-east-1.localhost:4566/key.txt");
         String host = S3VirtualHostFilter.resolveHost(null, uri);
         assertEquals("my-bucket", S3VirtualHostFilter.extractBucket(host, "localhost", DEFAULT_SUFFIXES));
+    }
+
+    @Test
+    void filterUsesForwardedHostWhenDirectHostIsProxyBackend() {
+        URI requestUri = URI.create("http://localhost:4566/asset-hash.json?versionId=123");
+        UriInfo uriInfo = mock(UriInfo.class);
+        when(uriInfo.getRequestUri()).thenReturn(requestUri);
+        ContainerRequestContext ctx = mock(ContainerRequestContext.class);
+        when(ctx.getUriInfo()).thenReturn(uriInfo);
+        when(ctx.getHeaderString("Host")).thenReturn("localhost:4566");
+        when(ctx.getHeaderString("X-Forwarded-Host")).thenReturn("assets.localhost:4566");
+
+        new S3VirtualHostFilter().filter(ctx);
+
+        ArgumentCaptor<URI> rewritten = ArgumentCaptor.forClass(URI.class);
+        verify(ctx).setRequestUri(rewritten.capture());
+        assertEquals("/assets/asset-hash.json", rewritten.getValue().getRawPath());
+        assertEquals("versionId=123", rewritten.getValue().getRawQuery());
+    }
+
+    @Test
+    void filterPrefersDirectVirtualHostOverForwardedHost() {
+        URI requestUri = URI.create("http://direct.localhost:4566/key.txt");
+        UriInfo uriInfo = mock(UriInfo.class);
+        when(uriInfo.getRequestUri()).thenReturn(requestUri);
+        ContainerRequestContext ctx = mock(ContainerRequestContext.class);
+        when(ctx.getUriInfo()).thenReturn(uriInfo);
+        when(ctx.getHeaderString("Host")).thenReturn("direct.localhost:4566");
+        when(ctx.getHeaderString("X-Forwarded-Host")).thenReturn("forwarded.localhost:4566");
+
+        new S3VirtualHostFilter().filter(ctx);
+
+        ArgumentCaptor<URI> rewritten = ArgumentCaptor.forClass(URI.class);
+        verify(ctx).setRequestUri(rewritten.capture());
+        assertEquals("/direct/key.txt", rewritten.getValue().getRawPath());
+    }
+
+    @Test
+    void filterUsesFirstForwardedHostInProxyChain() {
+        URI requestUri = URI.create("http://localhost:4566/key.txt");
+        UriInfo uriInfo = mock(UriInfo.class);
+        when(uriInfo.getRequestUri()).thenReturn(requestUri);
+        ContainerRequestContext ctx = mock(ContainerRequestContext.class);
+        when(ctx.getUriInfo()).thenReturn(uriInfo);
+        when(ctx.getHeaderString("Host")).thenReturn("localhost:4566");
+        when(ctx.getHeaderString("X-Forwarded-Host"))
+                .thenReturn(" original.localhost:4566, edge.internal, proxy.internal ");
+
+        new S3VirtualHostFilter().filter(ctx);
+
+        ArgumentCaptor<URI> rewritten = ArgumentCaptor.forClass(URI.class);
+        verify(ctx).setRequestUri(rewritten.capture());
+        assertEquals("/original/key.txt", rewritten.getValue().getRawPath());
+    }
+
+    @ParameterizedTest
+    @NullAndEmptySource
+    @ValueSource(strings = {
+            " ",
+            "https://assets.localhost:4566",
+            "assets.localhost:bad-port",
+            "assets.example.internal",
+            "abc.execute-api.localhost:4566",
+            ", assets.localhost:4566",
+    })
+    void invalidOrNonS3ForwardedHostsDoNotRewrite(String forwardedHost) {
+        URI requestUri = URI.create("http://localhost:4566/key.txt");
+        UriInfo uriInfo = mock(UriInfo.class);
+        when(uriInfo.getRequestUri()).thenReturn(requestUri);
+        ContainerRequestContext ctx = mock(ContainerRequestContext.class);
+        when(ctx.getUriInfo()).thenReturn(uriInfo);
+        when(ctx.getHeaderString("Host")).thenReturn("localhost:4566");
+        when(ctx.getHeaderString("X-Forwarded-Host")).thenReturn(forwardedHost);
+
+        new S3VirtualHostFilter().filter(ctx);
+
+        verify(ctx, never()).setRequestUri(org.mockito.ArgumentMatchers.any(URI.class));
     }
 
     // --- HTTP/2 website request: the path rewrite must preserve the s3-website authority (#1954) ---

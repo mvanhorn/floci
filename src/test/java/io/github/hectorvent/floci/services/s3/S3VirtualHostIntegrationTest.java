@@ -6,6 +6,8 @@ import org.junit.jupiter.api.Order;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.TestMethodOrder;
 
+import java.nio.charset.StandardCharsets;
+
 import static io.restassured.RestAssured.given;
 import static org.hamcrest.Matchers.*;
 
@@ -22,6 +24,10 @@ class S3VirtualHostIntegrationTest {
 
     private static final String REGION_BUCKET = "vhost-region-bucket";
     private static final String REGION_HOST = REGION_BUCKET + ".s3.us-east-1.localhost";
+
+    private static final String PROXY_BUCKET = "vhost-proxy-bucket";
+    private static final String PROXY_HOST = PROXY_BUCKET + ".localhost:4566";
+    private static final String PROXY_KEY = "0123456789abcdef0123456789abcdef.json";
 
     @Test
     @Order(1)
@@ -299,6 +305,53 @@ class S3VirtualHostIntegrationTest {
 
     @Test
     @Order(20)
+    void proxiedStreamingPutUsesForwardedBucketHost() {
+        String content = "proxied streaming content";
+        String streamingBody = "19;chunk-signature=0\r\n"
+                + content
+                + "\r\n0;chunk-signature=0\r\n"
+                + "x-amz-checksum-sha256:iprRw1fqgvKxbi49RuMxy4yK0KXk/wE4O0UR2R7gB9A=\r\n\r\n";
+
+        given()
+        .when()
+            .put("/" + PROXY_BUCKET)
+        .then()
+            .statusCode(200);
+
+        given()
+            .header("Host", "localhost:4566")
+            .header("X-Forwarded-Host", PROXY_HOST)
+            .header("Content-Encoding", "aws-chunked")
+            .header("x-amz-content-sha256", "STREAMING-AWS4-HMAC-SHA256-PAYLOAD-TRAILER")
+            .header("x-amz-decoded-content-length", content.length())
+            .header("x-amz-trailer", "x-amz-checksum-sha256")
+            .contentType("application/octet-stream")
+            .queryParam("x-id", "PutObject")
+            .body(streamingBody.getBytes(StandardCharsets.ISO_8859_1))
+        .when()
+            .put("/" + PROXY_KEY)
+        .then()
+            .statusCode(200)
+            .header("ETag", notNullValue());
+
+        given()
+        .when()
+            .get("/" + PROXY_BUCKET + "/" + PROXY_KEY)
+        .then()
+            .statusCode(200)
+            .body(equalTo(content));
+
+        given()
+        .when()
+            .get("/")
+        .then()
+            .statusCode(200)
+            .body(containsString("<Name>" + PROXY_BUCKET + "</Name>"))
+            .body(not(containsString("<Name>" + PROXY_KEY + "</Name>")));
+    }
+
+    @Test
+    @Order(21)
     void cleanupAndDeleteBucket() {
         given().header("Host", HOST).delete("/hello.txt");
         given().header("Host", HOST).delete("/path/to/nested.json");
@@ -315,6 +368,13 @@ class S3VirtualHostIntegrationTest {
             .header("Host", REGION_HOST)
         .when()
             .delete("/")
+        .then()
+            .statusCode(204);
+
+        given().delete("/" + PROXY_BUCKET + "/" + PROXY_KEY);
+        given()
+        .when()
+            .delete("/" + PROXY_BUCKET)
         .then()
             .statusCode(204);
     }
