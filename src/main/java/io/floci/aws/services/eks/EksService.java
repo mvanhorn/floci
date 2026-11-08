@@ -4,6 +4,8 @@ import com.fasterxml.jackson.core.type.TypeReference;
 import io.floci.aws.config.EmulatorConfig;
 import io.floci.aws.core.common.AwsArnUtils;
 import io.floci.aws.core.common.AwsException;
+import io.floci.aws.core.common.PaginatedResult;
+import io.floci.aws.core.common.Pagination;
 import io.floci.aws.core.common.RegionResolver;
 import io.floci.aws.core.common.RequestScopes;
 import io.floci.aws.core.common.ReservedTags;
@@ -46,6 +48,7 @@ import io.floci.aws.services.eks.model.NodegroupStatus;
 import io.floci.aws.services.eks.model.OidcIdentity;
 import io.floci.aws.services.eks.model.Provider;
 import io.floci.aws.services.eks.model.ResourcesVpcConfig;
+import io.quarkus.runtime.annotations.RegisterForReflection;
 import jakarta.annotation.PostConstruct;
 import jakarta.annotation.PreDestroy;
 import jakarta.enterprise.context.ApplicationScoped;
@@ -72,6 +75,7 @@ import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.TimeUnit;
 import java.util.function.Consumer;
+import java.util.function.Function;
 import java.util.function.UnaryOperator;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -83,6 +87,11 @@ public class EksService implements TagHandler, ResourceProvider, Ec2InstanceLaun
     private static final Logger LOG = Logger.getLogger(EksService.class);
 
     private record UserDataClaim(String userData, CompletableFuture<UserDataPipeline.ExecutionResult> future) {}
+
+    @RegisterForReflection
+    public record ClusterNamesPage(List<String> clusters, String nextToken) {}
+
+    private static final int CLUSTER_PAGE_SIZE = 100;
 
     private static final List<String> ALL_LOG_TYPES = List.of(
             "api", "audit", "authenticator", "controllerManager", "scheduler"
@@ -857,6 +866,12 @@ public class EksService implements TagHandler, ResourceProvider, Ec2InstanceLaun
         return storage.scan(k -> true).stream()
                 .map(Cluster::getName)
                 .collect(Collectors.toList());
+    }
+
+    public ClusterNamesPage listClusters(Integer maxResults, String nextToken) {
+        PaginatedResult<String> result = Pagination.paginate(listClusters(), Function.identity(),
+                maxResults, nextToken, CLUSTER_PAGE_SIZE, CLUSTER_PAGE_SIZE, "InvalidParameterException");
+        return new ClusterNamesPage(result.items(), result.nextToken());
     }
 
     public Cluster deleteCluster(String name) {

@@ -250,6 +250,29 @@ class EksServiceTest {
     }
 
     @Test
+    void listClustersPagesAndRejectsOutOfRangeMaxResults() {
+        createTestCluster("scope-page-b");
+        createTestCluster("scope-page-a");
+
+        EksService.ClusterNamesPage first = eksService.listClusters(1, null);
+        assertEquals(List.of("scope-page-a"), first.clusters());
+        assertNotNull(first.nextToken());
+
+        EksService.ClusterNamesPage second = eksService.listClusters(1, first.nextToken());
+        assertEquals(List.of("scope-page-b"), second.clusters());
+        assertNull(second.nextToken());
+
+        EksService.ClusterNamesPage all = eksService.listClusters(null, null);
+        assertEquals(List.of("scope-page-a", "scope-page-b"), all.clusters());
+        assertNull(all.nextToken());
+
+        for (int invalid : new int[] {0, 101}) {
+            AwsException error = assertThrows(AwsException.class, () -> eksService.listClusters(invalid, null));
+            assertEquals("InvalidParameterException", error.getErrorCode());
+        }
+    }
+
+    @Test
     void createClusterAssignsOidcIssuerAndKey() {
         CreateClusterRequest req = new CreateClusterRequest();
         req.setName("oidc-cluster");
