@@ -3,7 +3,9 @@ package io.floci.aws.services.cloudformation;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
+import com.fasterxml.jackson.databind.node.TextNode;
 import io.floci.aws.core.common.AwsException;
+import io.floci.aws.core.common.AwsRegions;
 import io.floci.aws.services.s3.S3Service;
 
 import java.nio.charset.StandardCharsets;
@@ -26,6 +28,7 @@ class AwsIncludeProcessor {
 
     static final String AWS_INCLUDE = "AWS::Include";
     private static final String FN_TRANSFORM = "Fn::Transform";
+    private static final String FN_SUB = "Fn::Sub";
     private static final String S3_SCHEME = "s3://";
 
     private final ObjectMapper objectMapper;
@@ -37,9 +40,20 @@ class AwsIncludeProcessor {
     }
 
     /**
+     * No-context overload of {@link #mergeIncludes(JsonNode, String, String)}: merges literal
+     * {@code s3://} locations and leaves {@code Fn::Sub} locations unresolved and rejected.
+     */
+    JsonNode mergeIncludes(JsonNode template) {
+        return mergeIncludes(template, null, null);
+    }
+
+    /**
      * Returns a copy of {@code template} with every {@code Fn::Transform}/{@code AWS::Include}
      * node replaced by the keys of the snippet it names, merged into the node's enclosing mapping
-     * alongside any keys already written there.
+     * alongside any keys already written there. When {@code Location} is a one-argument
+     * {@code Fn::Sub} string, substitutes only {@code ${AWS::Region}}, {@code ${AWS::AccountId}},
+     * {@code ${AWS::Partition}}, and {@code ${AWS::URLSuffix}} from {@code region} and
+     * {@code accountId} (honoring {@code ${!name}} as a literal {@code ${name}}).
      *
      * <p>Reference identity is part of this method's contract, not an incidental optimization: a
      * template carrying no {@code AWS::Include} is returned as the exact same {@code JsonNode}
@@ -49,27 +63,27 @@ class AwsIncludeProcessor {
      * merge apart from a no-op one, and a copy here even for a no-op merge would make every caller
      * treat an untouched template as changed.
      */
-    JsonNode mergeIncludes(JsonNode template) {
+    JsonNode mergeIncludes(JsonNode template, String region, String accountId) {
         if (!containsAwsInclude(template)) {
             return template;
         }
         JsonNode merged = template.deepCopy();
-        merge(merged);
+        merge(merged, region, accountId);
         return merged;
     }
 
-    private void merge(JsonNode node) {
+    private void merge(JsonNode node, String region, String accountId) {
         if (node.isObject()) {
-            mergeObject((ObjectNode) node);
+            mergeObject((ObjectNode) node, region, accountId);
         } else if (node.isArray()) {
-            node.forEach(this::merge);
+            node.forEach(child -> merge(child, region, accountId));
         }
     }
 
-    private void mergeObject(ObjectNode obj) {
+    private void mergeObject(ObjectNode obj, String region, String accountId) {
         JsonNode transform = obj.get(FN_TRANSFORM);
         if (transform != null && AWS_INCLUDE.equals(transform.path("Name").asText(""))) {
-            spliceInclude(obj, transform);
+            spliceInclude(obj, transform, region, accountId);
         }
         // Walk every remaining field, including the snippet's own keys just merged in above:
         // spliceInclude already rejects a snippet carrying its own AWS::Include, so revisiting
@@ -77,12 +91,12 @@ class AwsIncludeProcessor {
         // elsewhere in the template.
         Iterator<Map.Entry<String, JsonNode>> fields = obj.fields();
         while (fields.hasNext()) {
-            merge(fields.next().getValue());
+            merge(fields.next().getValue(), region, accountId);
         }
     }
 
-    private void spliceInclude(ObjectNode obj, JsonNode transform) {
-        String location = describeLocation(transform);
+    private void spliceInclude(ObjectNode obj, JsonNode transform, String region, String accountId) {
+        String location = resolveLocation(transform, region, accountId);
         S3Location s3Location = parseS3Location(location);
         JsonNode snippet = fetchSnippet(s3Location, location);
 
@@ -97,6 +111,64 @@ class AwsIncludeProcessor {
 
         obj.remove(FN_TRANSFORM);
         obj.setAll((ObjectNode) snippet);
+    }
+
+    private String resolveLocation(JsonNode transform, String region, String accountId) {
+        JsonNode parameters = transform.path("Parameters");
+        if (parameters.isObject()) {
+            JsonNode locationNode = parameters.path("Location");
+            if (locationNode.isObject() && locationNode.size() == 1) {
+                JsonNode subNode = locationNode.get(FN_SUB);
+                if (subNode != null && subNode.isTextual()) {
+                    String resolved = resolveSubLocation(subNode.textValue(), region, accountId);
+                    if (resolved != null) {
+                        return resolved.isBlank() ? TextNode.valueOf(resolved).toString() : resolved;
+                    }
+                }
+            }
+        }
+        return describeLocation(transform);
+    }
+
+    private static String resolveSubLocation(String template, String region, String accountId) {
+        if (!hasText(region) && !hasText(accountId)) {
+            return null;
+        }
+        StringBuilder result = new StringBuilder();
+        int i = 0;
+        while (i < template.length()) {
+            if (template.charAt(i) == '$' && i + 1 < template.length() && template.charAt(i + 1) == '{') {
+                int end = template.indexOf('}', i + 2);
+                if (end == -1) {
+                    return null;
+                }
+                String varName = template.substring(i + 2, end);
+                if (varName.startsWith("!")) {
+                    result.append("${").append(varName, 1, varName.length()).append('}');
+                } else {
+                    String substituted = switch (varName) {
+                        case "AWS::Region" -> hasText(region) ? region : null;
+                        case "AWS::AccountId" -> hasText(accountId) ? accountId : null;
+                        case "AWS::Partition" -> hasText(region) ? AwsRegions.partitionFor(region) : null;
+                        case "AWS::URLSuffix" -> hasText(region) ? AwsRegions.dnsSuffixFor(region) : null;
+                        default -> null;
+                    };
+                    if (substituted == null) {
+                        return null;
+                    }
+                    result.append(substituted);
+                }
+                i = end + 1;
+            } else {
+                result.append(template.charAt(i));
+                i++;
+            }
+        }
+        return result.toString();
+    }
+
+    private static boolean hasText(String value) {
+        return value != null && !value.isBlank();
     }
 
     /**
@@ -171,10 +243,26 @@ class AwsIncludeProcessor {
             String withoutScheme = location.substring(S3_SCHEME.length());
             int slash = withoutScheme.indexOf('/');
             if (slash > 0 && slash < withoutScheme.length() - 1) {
-                return new S3Location(withoutScheme.substring(0, slash), withoutScheme.substring(slash + 1));
+                String bucket = withoutScheme.substring(0, slash);
+                if (isValidBucketName(bucket)) {
+                    return new S3Location(bucket, withoutScheme.substring(slash + 1));
+                }
             }
         }
         throw new AwsException("ValidationError",
                 "Fn::Transform AWS::Include Location must be an s3://bucket/key URI, got " + location, 400);
+    }
+
+    /**
+     * A bucket {@code S3Service} will fetch. Names are path-safe directory names, not AWS DNS
+     * labels, so a literal containing {@code '+'} is fetched. A blank name, {@code '\\'}, or a NUL
+     * is refused, as is a name that still contains {@code ${}}: that is an unsubstituted
+     * {@code ${!name}} placeholder, which is rejected without calling S3.
+     */
+    private static boolean isValidBucketName(String bucket) {
+        return !bucket.isBlank()
+                && !bucket.contains("\\")
+                && bucket.indexOf('\0') < 0
+                && !bucket.contains("${");
     }
 }

@@ -984,8 +984,12 @@ the underlying S3 error naming it, for example `NoSuchKey` at HTTP 404, instead 
 answer to give.
 
 A snippet may not itself use `AWS::Include`; nesting is rejected rather than expanded or looped.
-`Location` must be a plain string; a `Ref` or another intrinsic in its place is rejected, naming
-the rejected node, rather than resolved.
+`Location` must be a plain string or a one-argument `Fn::Sub` string over the request-scoped
+pseudo-parameters `${AWS::Region}`, `${AWS::AccountId}`, `${AWS::Partition}`, and
+`${AWS::URLSuffix}` (honoring `${!name}` as a literal `${name}`), which are resolved at include time
+from the operation's region and account. `Ref`, a two-argument `Fn::Sub`, an `Fn::Sub` naming any
+other variable, or any other intrinsic in `Location` is rejected, naming the rejected node, rather
+than resolved.
 
 Two known deviations from AWS:
 
@@ -993,7 +997,8 @@ Two known deviations from AWS:
   YAML short tags (`!Ref`, `!Sub`, ...) where AWS's own `AWS::Include` documentation says a snippet
   does not.
 - AWS's own `Fn::Transform` documentation shows a `Location` written as an intrinsic function (its
-  example uses `Ref`) and describes it as accepted; floci does not resolve one and rejects the
+  example uses `Ref`) and describes it as accepted; beyond a one-argument `Fn::Sub` over those four
+  pseudo-parameters, floci does not resolve an intrinsic `Location` (`Ref` included) and rejects the
   template instead. This deviation comes from reading AWS's documentation, not from a request
   measured against a real account.
 

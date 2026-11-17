@@ -679,7 +679,7 @@ public class CloudFormationService implements ResourceProvider {
         // template declaring the SAM transform, whether or not that transform succeeded, so
         // gating this call on samTransformFailureReason == null duplicates that check for no
         // effect.
-        validateGetStackOutputPlacement(resolvedTemplate);
+        validateGetStackOutputPlacement(resolvedTemplate, region, accountId);
         validateResourceDependencies(resolvedTemplate, parameters, preflightStackName, preflightStackId,
                 region, accountId);
 
@@ -857,7 +857,7 @@ public class CloudFormationService implements ResourceProvider {
             // Compared as execution stores it: AWS::Include fragments read again and merged, then
             // the SAM transform applied with the stack's parameter values, which it can resolve
             // into the expansion. A fragment that changed in S3 is a change.
-            JsonNode template = awsIncludeProcessor.mergeIncludes(submittedTemplate);
+            JsonNode template = awsIncludeProcessor.mergeIncludes(submittedTemplate, region, ownerAccount(stack));
             if (samTransformProcessor.hasSamTransform(template)) {
                 template = samTransformProcessor.expandSamTemplate(template,
                         samTransformParameters(template, given, region));
@@ -1108,7 +1108,7 @@ public class CloudFormationService implements ResourceProvider {
             JsonNode newTemplate = parseTemplate(cs.getTemplateBody());
             // Merge Fn::Transform/AWS::Include snippets before SAM expansion, matching AWS order:
             // an included fragment may itself carry SAM resources.
-            newTemplate = awsIncludeProcessor.mergeIncludes(newTemplate);
+            newTemplate = awsIncludeProcessor.mergeIncludes(newTemplate, region, accountId);
             if (samTransformProcessor.hasSamTransform(newTemplate)) {
                 // The deployed stack's template is always the SAM-expanded form (see
                 // executeTemplate); comparing the change set's raw SAM source against it would
@@ -2777,7 +2777,7 @@ public class CloudFormationService implements ResourceProvider {
             // reference, unchanged, when the template carries no AWS::Include, which is what lets
             // the check below tell a real merge apart from a no-op one.
             JsonNode beforeInclude = template;
-            template = awsIncludeProcessor.mergeIncludes(template);
+            template = awsIncludeProcessor.mergeIncludes(template, region, accountId);
             boolean includeMerged = template != beforeInclude;
 
             // Apply SAM transform if the template declares AWS::Serverless-2016-10-31
@@ -5238,7 +5238,7 @@ public class CloudFormationService implements ResourceProvider {
         // (measured: the Child resource fails with the template error, and the parent rolls back).
         try {
             requireParameterValues(childTemplate, childParams);
-            validateGetStackOutputPlacement(childTemplate);
+            validateGetStackOutputPlacement(childTemplate, region, accountId);
         } catch (AwsException e) {
             resource.setStatus("CREATE_FAILED");
             resource.setStatusReason(e.getMessage());
@@ -5695,7 +5695,7 @@ public class CloudFormationService implements ResourceProvider {
      * {@code Export.Name}, neither of which may depend on another stack. A nested stack's template
      * is checked when the child is created, and the child's resource fails with the same message.
      */
-    private void validateGetStackOutputPlacement(String templateBody) {
+    private void validateGetStackOutputPlacement(String templateBody, String region, String accountId) {
         JsonNode parsed;
         try {
             parsed = parseTemplate(templateBody);
@@ -5709,7 +5709,7 @@ public class CloudFormationService implements ResourceProvider {
         JsonNode template;
         try {
             // The rules hold for the template as processed: an AWS::Include fragment can carry it.
-            template = awsIncludeProcessor.mergeIncludes(parsed);
+            template = awsIncludeProcessor.mergeIncludes(parsed, region, accountId);
         } catch (AwsException e) {
             // A fragment that cannot be read fails the operation as the transform does, where the
             // includes are processed; the request itself is not refused for it on AWS.

@@ -20,6 +20,8 @@ import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
 /**
@@ -212,6 +214,30 @@ class AwsIncludeProcessorTest {
                 () -> mergedSubstitutions(blockFormBareName));
         assertTrue(bare.getMessage().contains("swagger.yaml"),
                 "message does not name the rejected location: " + bare.getMessage());
+    }
+
+    @Test
+    void literalLocationWithPathSafeBucketCharacterIsFetched() throws Exception {
+        String bucket = "cfn+snippets";
+        String key = "names.yaml";
+        stubSnippet(bucket, key, "orderTableName: orders\n");
+        String template = """
+            Resources:
+              OrdersStateMachine:
+                Type: AWS::StepFunctions::StateMachine
+                Properties:
+                  DefinitionSubstitutions:
+                    Fn::Transform:
+                      Name: AWS::Include
+                      Parameters:
+                        Location: s3://%s/%s
+            """.formatted(bucket, key);
+
+        JsonNode substitutions = mergedSubstitutions(template);
+
+        assertEquals("orders", substitutions.get("orderTableName").asText());
+        assertFalse(substitutions.has("Fn::Transform"));
+        verify(s3Service).getObject(bucket, key);
     }
 
     @Test
@@ -456,5 +482,186 @@ class AwsIncludeProcessorTest {
         AwsException e = assertThrows(AwsException.class, () -> mergedSubstitutions(template));
         assertEquals("Fn::Transform AWS::Include Location must be an s3://bucket/key URI, "
                 + "got {\"Name\":\"AWS::Include\",\"Parameters\":[1,2]}", e.getMessage());
+    }
+
+    @Test
+    void fnSubLocationWithRegionPseudoParameterMergesSnippet() {
+        stubSnippet("snippets-us-east-1", "names.yaml", "orderTableName: orders\n");
+        JsonNode template = new CloudFormationYamlParser(mapper).parse("""
+            Resources:
+              OrdersStateMachine:
+                Type: AWS::StepFunctions::StateMachine
+                Properties:
+                  DefinitionSubstitutions:
+                    Fn::Transform:
+                      Name: AWS::Include
+                      Parameters:
+                        Location: { Fn::Sub: "s3://snippets-${AWS::Region}/names.yaml" }
+            """);
+
+        JsonNode merged = processor.mergeIncludes(template, "us-east-1", "000000000000");
+        JsonNode substitutions = merged.at("/Resources/OrdersStateMachine/Properties/DefinitionSubstitutions");
+
+        assertEquals("orders", substitutions.get("orderTableName").asText());
+        assertFalse(substitutions.has("Fn::Transform"));
+    }
+
+    @Test
+    void fnSubLocationSubstitutesAccountPartitionAndUrlSuffixAndEscapesLiterals() {
+        stubSnippet("snippets-123456789012-aws-cn", "amazonaws.com.cn/${literal}/names.yaml",
+                "orderTableName: cn-orders\n");
+        JsonNode template = new CloudFormationYamlParser(mapper).parse("""
+            Resources:
+              OrdersStateMachine:
+                Type: AWS::StepFunctions::StateMachine
+                Properties:
+                  DefinitionSubstitutions:
+                    Fn::Transform:
+                      Name: AWS::Include
+                      Parameters:
+                        Location:
+                          Fn::Sub: "s3://snippets-${AWS::AccountId}-${AWS::Partition}/${AWS::URLSuffix}/${!literal}/names.yaml"
+            """);
+
+        JsonNode merged = processor.mergeIncludes(template, "cn-north-1", "123456789012");
+        JsonNode substitutions = merged.at("/Resources/OrdersStateMachine/Properties/DefinitionSubstitutions");
+
+        assertEquals("cn-orders", substitutions.get("orderTableName").asText());
+        assertFalse(substitutions.has("Fn::Transform"));
+
+        JsonNode noInclude = new CloudFormationYamlParser(mapper).parse("""
+            Resources:
+              Bucket:
+                Type: AWS::S3::Bucket
+            """);
+        assertSame(noInclude, processor.mergeIncludes(noInclude, "us-east-1", "000000000000"));
+    }
+
+    @Test
+    void fnSubLocationRejectsEscapedPseudoParameterUnsupportedIntrinsicsAndMissingContext() {
+        JsonNode escapedRegion = new CloudFormationYamlParser(mapper).parse("""
+            Resources:
+              OrdersStateMachine:
+                Type: AWS::StepFunctions::StateMachine
+                Properties:
+                  DefinitionSubstitutions:
+                    Fn::Transform:
+                      Name: AWS::Include
+                      Parameters:
+                        Location: { Fn::Sub: "s3://snippets-${!AWS::Region}/names.yaml" }
+            """);
+        AwsException escaped = assertThrows(AwsException.class,
+                () -> processor.mergeIncludes(escapedRegion, "us-east-1", "000000000000"));
+        assertTrue(escaped.getMessage().contains("${AWS::Region}"), escaped.getMessage());
+        assertFalse(escaped.getMessage().contains("us-east-1"), escaped.getMessage());
+
+        JsonNode refLocation = new CloudFormationYamlParser(mapper).parse("""
+            Resources:
+              OrdersStateMachine:
+                Type: AWS::StepFunctions::StateMachine
+                Properties:
+                  DefinitionSubstitutions:
+                    Fn::Transform:
+                      Name: AWS::Include
+                      Parameters:
+                        Location: { Ref: InputValue }
+            """);
+        AwsException refRejected = assertThrows(AwsException.class,
+                () -> processor.mergeIncludes(refLocation, "us-east-1", "000000000000"));
+        assertTrue(refRejected.getMessage().contains("\"Ref\":\"InputValue\""), refRejected.getMessage());
+
+        JsonNode parameterSub = new CloudFormationYamlParser(mapper).parse("""
+            Resources:
+              OrdersStateMachine:
+                Type: AWS::StepFunctions::StateMachine
+                Properties:
+                  DefinitionSubstitutions:
+                    Fn::Transform:
+                      Name: AWS::Include
+                      Parameters:
+                        Location: { Fn::Sub: "s3://snippets-${Env}/names.yaml" }
+            """);
+        AwsException paramRejected = assertThrows(AwsException.class,
+                () -> processor.mergeIncludes(parameterSub, "us-east-1", "000000000000"));
+        assertTrue(paramRejected.getMessage().contains("\"Fn::Sub\":\"s3://snippets-${Env}/names.yaml\""),
+                paramRejected.getMessage());
+
+        JsonNode twoArgSub = new CloudFormationYamlParser(mapper).parse("""
+            Resources:
+              OrdersStateMachine:
+                Type: AWS::StepFunctions::StateMachine
+                Properties:
+                  DefinitionSubstitutions:
+                    Fn::Transform:
+                      Name: AWS::Include
+                      Parameters:
+                        Location:
+                          Fn::Sub:
+                            - "s3://snippets-${Env}/names.yaml"
+                            - Env: prod
+            """);
+        AwsException twoArgRejected = assertThrows(AwsException.class,
+                () -> processor.mergeIncludes(twoArgSub, "us-east-1", "000000000000"));
+        assertTrue(twoArgRejected.getMessage().contains("\"Fn::Sub\":[\"s3://snippets-${Env}/names.yaml\""),
+                twoArgRejected.getMessage());
+
+        JsonNode regionSub = new CloudFormationYamlParser(mapper).parse("""
+            Resources:
+              OrdersStateMachine:
+                Type: AWS::StepFunctions::StateMachine
+                Properties:
+                  DefinitionSubstitutions:
+                    Fn::Transform:
+                      Name: AWS::Include
+                      Parameters:
+                        Location: { Fn::Sub: "s3://snippets-${AWS::Region}/names.yaml" }
+            """);
+        AwsException nullRegionRejected = assertThrows(AwsException.class,
+                () -> processor.mergeIncludes(regionSub, null, "000000000000"));
+        assertTrue(nullRegionRejected.getMessage().contains("\"Fn::Sub\":\"s3://snippets-${AWS::Region}/names.yaml\""),
+                nullRegionRejected.getMessage());
+
+        verifyNoInteractions(s3Service);
+    }
+
+    @Test
+    void fnSubLocationPreservesErrorsForNonS3UriAndUnreadableSnippet() {
+        JsonNode nonS3 = new CloudFormationYamlParser(mapper).parse("""
+            Resources:
+              OrdersStateMachine:
+                Type: AWS::StepFunctions::StateMachine
+                Properties:
+                  DefinitionSubstitutions:
+                    Fn::Transform:
+                      Name: AWS::Include
+                      Parameters:
+                        Location: { Fn::Sub: "./snippets-${AWS::Region}/names.yaml" }
+            """);
+        AwsException nonS3Error = assertThrows(AwsException.class,
+                () -> processor.mergeIncludes(nonS3, "us-east-1", "000000000000"));
+        assertEquals("ValidationError", nonS3Error.getErrorCode());
+        assertTrue(nonS3Error.getMessage().contains("./snippets-us-east-1/names.yaml"),
+                nonS3Error.getMessage());
+        verifyNoInteractions(s3Service);
+
+        when(s3Service.getObject("snippets-us-east-1", "missing.yaml"))
+                .thenThrow(new AwsException("NoSuchKey", "The specified key does not exist.", 404));
+        JsonNode missingSnippet = new CloudFormationYamlParser(mapper).parse("""
+            Resources:
+              OrdersStateMachine:
+                Type: AWS::StepFunctions::StateMachine
+                Properties:
+                  DefinitionSubstitutions:
+                    Fn::Transform:
+                      Name: AWS::Include
+                      Parameters:
+                        Location: { Fn::Sub: "s3://snippets-${AWS::Region}/missing.yaml" }
+            """);
+        AwsException unreadable = assertThrows(AwsException.class,
+                () -> processor.mergeIncludes(missingSnippet, "us-east-1", "000000000000"));
+        assertEquals("NoSuchKey", unreadable.getErrorCode());
+        assertEquals(404, unreadable.getHttpStatus());
+        assertTrue(unreadable.getMessage().contains("s3://snippets-us-east-1/missing.yaml"),
+                unreadable.getMessage());
     }
 }
